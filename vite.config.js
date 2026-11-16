@@ -1,6 +1,12 @@
+import dns from 'node:dns'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
+
+// 避免 CI / Linux 環境下 IPv6 (AAAA) 連線黑洞導致外部 API (如 Open-Meteo) 10 秒逾時
+if (typeof dns.setDefaultResultOrder === 'function') {
+    dns.setDefaultResultOrder('ipv4first')
+}
 
 // https://vitejs.dev/config/
 export default defineConfig({
