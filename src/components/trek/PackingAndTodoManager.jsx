@@ -34,21 +34,23 @@ import { packingRepo, todoRepo, fileRepo } from '../../services/db';
 import { PACKING_CATEGORIES, PACKING_TEMPLATES, calculatePackingStats } from '../../services/packing/packingTemplates';
 import { uploadLargeFileToDrive } from '../../services/files/gdriveUploadService';
 import { useSyncContext } from '../../contexts/SyncContext';
+import { STORAGE_KEYS } from '../../constants/storageKeys';
+import { useLocalStorage } from '../../hooks/useLocalStorage';
 
 export default function PackingAndTodoManager() {
     const { activeTrip, trips = [] } = useTrek();
     const { accessToken } = useSyncContext();
 
     // 範圍模式：'trip' (預設：僅當前選定行程) | 'all' (全域：所有行程整合總匯)
-    const [scope, setScope] = useState('trip');
+    const [scope, setScope] = useLocalStorage(STORAGE_KEYS.PACKING_SCOPE, 'trip');
 
-    const [activeSubTab, setActiveSubTab] = useState('packing'); // 'packing' | 'todos' | 'files'
+    const [activeSubTab, setActiveSubTab] = useLocalStorage(STORAGE_KEYS.PACKING_SUB_TAB, 'packing'); // 'packing' | 'todos' | 'files'
 
     // ── 行李狀態 ──────────────────────────────────────────────────────────
     const [packingItems, setPackingItems] = useState([]);
-    const [selectedCategory, setSelectedCategory] = useState('all');
-    const [selectedVisibility, setSelectedVisibility] = useState('all');
-    const [showWeightRollup, setShowWeightRollup] = useState(true);
+    const [selectedCategory, setSelectedCategory] = useLocalStorage(STORAGE_KEYS.PACKING_CATEGORY, 'all');
+    const [selectedVisibility, setSelectedVisibility] = useLocalStorage(STORAGE_KEYS.PACKING_VISIBILITY, 'all');
+    const [showWeightRollup, setShowWeightRollup] = useLocalStorage(STORAGE_KEYS.PACKING_WEIGHT_ROLLUP, true);
     const [newPackingName, setNewPackingName] = useState('');
     const [newPackingCategory, setNewPackingCategory] = useState('essential');
     const [newPackingNotes, setNewPackingNotes] = useState('');
@@ -65,7 +67,7 @@ export default function PackingAndTodoManager() {
 
     // ── 檔案狀態 ──────────────────────────────────────────────────────────
     const [files, setFiles] = useState([]);
-    const [showTrash, setShowTrash] = useState(false);
+    const [showTrash, setShowTrash] = useLocalStorage(STORAGE_KEYS.PACKING_SHOW_TRASH, false);
     const [uploadProgress, setUploadProgress] = useState(null);
 
     // 1. 載入資料 (依 Scope 區分當前旅程或全域)

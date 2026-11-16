@@ -35,11 +35,11 @@ const TripCard = ({
     const isOpenJaw = trip.isOpenJaw ?? false;
     const tripDays = trip.tripDays ?? null;
     const isExternalOnly = trip.isExternalOnly;
-    const customLabel = tripLabels[comboKey] || `Trip ${index + 1}`;
+    const customLabel = tripLabels[comboKey] || trip.customLabel || `Trip ${index + 1}`;
     const matchedHotels = trip.matchedHotels ?? [];
     const matchedActivities = trip.matchedActivities || [];
     const multiDayVouchers = matchedActivities.filter(a => a.endDate && a.endDate !== a.startDate);
-    const hotelWarns = trip.hotelWarnings || [];
+    const hotelWarns = (trip.isArchived || trip.isPast) ? [] : (trip.hotelWarnings || []);
 
     const isVirtual = trip.isVirtual || segments.length === 0;
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { useItinerary } from '../useItinerary';
+import { useItinerary, buildReadableTripLabel } from '../useItinerary';
 
 // 由於 useItinerary 底下使用 useMemo，在純測試中可以直接呼叫 React hook，
 // 或是直接測試 useItinerary 回傳的計算邏輯（由於它是純函數，可以直接提取內建 return 邏輯進行測試，
@@ -132,5 +132,85 @@ describe('useItinerary - Open-Jaw Proximity Warnings', () => {
         // 東京飯店離 NRT 很近，所以不應該有地點警告
         const hasLocWarn = trip.hotelWarnings.some(w => w.includes('地點落差警告'));
         expect(hasLocWarn).toBe(false);
+    });
+
+    it('should suppress hotel overlap and gap warnings for archived or past trips (Scheme A)', () => {
+        const decoratedTrips = [
+            {
+                id: 'ticket-143ef431-14a5-418b-892c-1be3bcaed37e-1',
+                isArchived: true,
+                isComplete: true,
+                segments: [
+                    {
+                        id: 'seg-1',
+                        date: '2026-10-16',
+                        arrivalDate: '2026-10-16',
+                        from: 'TSA 台北松山',
+                        to: 'HND 東京羽田',
+                    },
+                    {
+                        id: 'seg-2',
+                        date: '2026-10-18',
+                        from: 'HND 東京羽田',
+                        to: 'TSA 台北松山',
+                    }
+                ],
+                tripStartAt: new Date('2026-10-16'),
+                tripEndAt: new Date('2026-10-18'),
+                tripDays: 3
+            }
+        ];
+
+        const overlappingHotels = [
+            {
+                id: 'h-1',
+                name: '東橫INN 東京日本橋馬喰町',
+                checkIn: '2026-10-16',
+                checkOut: '2026-10-17',
+                priceTWD: 2500
+            },
+            {
+                id: 'h-2',
+                name: '東橫INN 東京新宿御苑前站3番出口',
+                checkIn: '2026-10-16',
+                checkOut: '2026-10-18',
+                priceTWD: 3000
+            }
+        ];
+
+        const { result } = renderHook(() => useItinerary(decoratedTrips, overlappingHotels, []));
+        const trip = result.current.find(t => t.id === 'ticket-143ef431-14a5-418b-892c-1be3bcaed37e-1');
+
+        expect(trip).toBeDefined();
+        expect(trip.hotelWarnings).toEqual([]);
+        expect(trip.hasWarning).toBe(false);
+    });
+
+    it('should generate human-readable trip labels instead of raw internal ticket UUIDs (Scheme C)', () => {
+        const rawTrip = {
+            id: 'ticket-143ef431-14a5-418b-892c-1be3bcaed37e-1',
+            segments: [
+                {
+                    id: 'seg-1',
+                    date: '2026-10-16',
+                    from: 'TSA 台北松山',
+                    to: 'HND 東京羽田',
+                },
+                {
+                    id: 'seg-2',
+                    date: '2026-10-18',
+                    from: 'HND 東京羽田',
+                    to: 'TSA 台北松山',
+                }
+            ],
+            tripStartAt: new Date('2026-10-16'),
+            tripEndAt: new Date('2026-10-18'),
+            tripDays: 3
+        };
+
+        expect(buildReadableTripLabel(rawTrip)).toBe('2026/10/16 TSA→HND');
+
+        const { result } = renderHook(() => useItinerary([rawTrip], [], []));
+        expect(result.current[0].customLabel).toBe('2026/10/16 TSA→HND');
     });
 });

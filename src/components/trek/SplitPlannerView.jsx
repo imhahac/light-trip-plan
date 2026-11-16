@@ -38,6 +38,8 @@ import {
 } from '../../contexts/DataContext';
 import { getUnifiedReservations } from '../../services/reservations/unifiedReservationService';
 import { placeItemRepo } from '../../services/db';
+import { STORAGE_KEYS } from '../../constants/storageKeys';
+import { useLocalStorage } from '../../hooks/useLocalStorage';
 
 export default function SplitPlannerView({ defaultSubTab = 'daily' }) {
     const { 
@@ -53,7 +55,7 @@ export default function SplitPlannerView({ defaultSubTab = 'daily' }) {
         if (activeTab === 'planner') return 'daily';
         return defaultSubTab;
     }, [activeTab, defaultSubTab]);
-    const [mobileActiveView, setMobileActiveView] = useState('planner'); // 'planner' | 'map'
+    const [mobileActiveView, setMobileActiveView] = useLocalStorage(STORAGE_KEYS.SPLIT_MOBILE_VIEW, 'planner'); // 'planner' | 'map'
     const [selectedPlaces, setSelectedPlaces] = useState([]);
     const [routeGeometry, setRouteGeometry] = useState(null);
 

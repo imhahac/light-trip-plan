@@ -1,7 +1,7 @@
 import React from 'react';
 import PropTypes from 'prop-types';
 
-export default function BottomNav({ WORKSPACES, TABS, activeTab, setActiveTab }) {
+export default function BottomNav({ WORKSPACES, TABS, activeTab, setActiveTab, workspaceTabs = {} }) {
     if (WORKSPACES && WORKSPACES.length > 0) {
         return (
             <div className="md:hidden fixed bottom-0 left-0 right-0 bg-slate-900 border-t border-slate-800 flex justify-around items-center px-2 py-2 pb-safe shadow-xl z-50">
@@ -14,7 +14,7 @@ export default function BottomNav({ WORKSPACES, TABS, activeTab, setActiveTab })
                         <button
                             key={ws.id}
                             onClick={() => {
-                                if (!isActive) setActiveTab(ws.defaultTab);
+                                if (!isActive) setActiveTab(workspaceTabs?.[ws.id] || ws.defaultTab);
                             }}
                             className={`flex flex-col items-center justify-center w-full py-1 transition-all ${
                                 isActive ? 'text-indigo-400 font-bold' : 'text-slate-400 hover:text-slate-200'
@@ -59,5 +59,6 @@ BottomNav.propTypes = {
     WORKSPACES: PropTypes.array,
     TABS: PropTypes.array,
     activeTab: PropTypes.string.isRequired,
-    setActiveTab: PropTypes.func.isRequired
+    setActiveTab: PropTypes.func.isRequired,
+    workspaceTabs: PropTypes.object
 };

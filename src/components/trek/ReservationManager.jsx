@@ -32,12 +32,14 @@ import { useTrek } from '../../contexts/TrekContext';
 import { useUIContext } from '../../contexts/UIContext';
 import { reservationRepo } from '../../services/db';
 import { RESERVATION_TYPES, RESERVATION_TYPE_CONFIG, RESERVATION_STATUS } from '../../constants/reservationTypes';
+import { STORAGE_KEYS } from '../../constants/storageKeys';
+import { useLocalStorage } from '../../hooks/useLocalStorage';
 import { importBookingFile } from '../../services/import';
 
 export default function ReservationManager({ unifiedReservations = null }) {
     const { activeTrip, reservations, refreshTrips } = useTrek();
     const { setActiveTab } = useUIContext();
-    const [selectedCategory, setSelectedCategory] = useState('all');
+    const [selectedCategory, setSelectedCategory] = useLocalStorage(STORAGE_KEYS.RESERVATION_CATEGORY, 'all');
     const [isUploading, setIsUploading] = useState(false);
     const [copiedId, setCopiedId] = useState(null);
     const [isAddModalOpen, setIsAddModalOpen] = useState(false);

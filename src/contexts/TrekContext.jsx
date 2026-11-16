@@ -10,19 +10,31 @@ import { tripRepo, reservationRepo, dayPlanRepo } from '../services/db';
 import { runLegacyMigration } from '../services/migration/legacyMigration';
 import { sortTripsByTime, isTripArchivedOrEnded } from '../services/trips/tripStatusService';
 import { fetchShareSnapshot } from '../services/shareService';
+import { STORAGE_KEYS } from '../constants/storageKeys';
+import { useLocalStorage } from '../hooks/useLocalStorage';
 import { logger } from '../utils/logger';
 
 const TrekContext = createContext(null);
+const VALID_VIEW_MODES = new Set(['split', 'planner-only', 'map-only']);
 
 export function TrekProvider({ children }) {
     const [trips, setTrips] = useState([]);
-    const [activeTripId, setActiveTripId] = useState(null);
+    const [activeTripId, setActiveTripId] = useLocalStorage(STORAGE_KEYS.TREK_ACTIVE_TRIP_ID, null);
     const [activeTrip, setActiveTrip] = useState(null);
     const [reservations, setReservations] = useState([]);
     const [dayPlans, setDayPlans] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
-    const [viewMode, setViewMode] = useState('split'); // 'split' | 'planner-only' | 'map-only'
+    const [storedViewMode, setStoredViewMode] = useLocalStorage(STORAGE_KEYS.TREK_VIEW_MODE, 'split'); // 'split' | 'planner-only' | 'map-only'
     const [sharedTripData, setSharedTripData] = useState(null);
+
+    const viewMode = VALID_VIEW_MODES.has(storedViewMode) ? storedViewMode : 'split';
+    const setViewMode = useCallback((nextModeOrUpdater) => {
+        setStoredViewMode((prev) => {
+            const current = VALID_VIEW_MODES.has(prev) ? prev : 'split';
+            const resolved = typeof nextModeOrUpdater === 'function' ? nextModeOrUpdater(current) : nextModeOrUpdater;
+            return VALID_VIEW_MODES.has(resolved) ? resolved : 'split';
+        });
+    }, [setStoredViewMode]);
 
     const activeTripIdRef = useRef(activeTripId);
     activeTripIdRef.current = activeTripId;
@@ -41,12 +53,15 @@ export function TrekProvider({ children }) {
                 return;
             }
 
-            // 優先選擇指定旅程，否則優先選取進行中/即將出發之旅程
+            // 優先選擇指定旅程或上次記憶的旅程，否則優先選取進行中/即將出發之旅程
             const defaultTarget = activeTrips[0]?.id || sortedTrips[0]?.id || null;
-            const targetId = preferredTripId || activeTripIdRef.current || defaultTarget;
-            setActiveTripId(targetId);
-
-            const selected = sortedTrips.find(t => t.id === targetId) || sortedTrips[0] || null;
+            const candidateId = preferredTripId || activeTripIdRef.current || defaultTarget;
+            const selected = sortedTrips.find(t => t.id === candidateId)
+                || sortedTrips.find(t => t.id === defaultTarget)
+                || sortedTrips[0]
+                || null;
+            const finalTargetId = selected ? selected.id : null;
+            setActiveTripId(finalTargetId);
             setActiveTrip(selected);
 
             if (selected) {

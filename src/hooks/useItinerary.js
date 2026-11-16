@@ -35,6 +35,23 @@ const getCachedAirportCoords = (code) => {
     return null;
 };
 
+/**
+ * 根據航段自動生成易讀的行程標題（避免直接暴露內部 ticket UUID）
+ */
+export function buildReadableTripLabel(trip) {
+    if (!trip) return '未命名行程';
+    if (trip.customLabel) return trip.customLabel;
+    const segs = trip.segments || [];
+    if (segs.length > 0) {
+        const first = segs[0];
+        const fromCode = (first.from || '').split(' ')[0] || '出發';
+        const toCode = (first.to || '').split(' ')[0] || '目的地';
+        const dateStr = first.date ? first.date.replace(/-/g, '/') : '';
+        return dateStr ? `${dateStr} ${fromCode}→${toCode}` : `${fromCode}→${toCode} 行程`;
+    }
+    return '未命名行程';
+}
+
 export function useItinerary(decoratedTrips, hotels, activities = []) {
     return useMemo(() => {
         const matchedHotelIds = new Set();
@@ -44,7 +61,15 @@ export function useItinerary(decoratedTrips, hotels, activities = []) {
         const tripItineraries = decoratedTrips.map(trip => {
             const segs = trip.segments || [];
             if (!segs.length) {
-                return { ...trip, matchedHotels: [], matchedActivities: [], totalHotelCostTWD: 0, hotelWarnings: [], hasWarning: false };
+                return {
+                    ...trip,
+                    customLabel: buildReadableTripLabel(trip),
+                    matchedHotels: [],
+                    matchedActivities: [],
+                    totalHotelCostTWD: 0,
+                    hotelWarnings: [],
+                    hasWarning: false,
+                };
             }
 
             const tripStartDate = segs[0]?.date;
@@ -76,9 +101,12 @@ export function useItinerary(decoratedTrips, hotels, activities = []) {
             }).sort((a, b) => (a.startDate || '').localeCompare(b.startDate || ''));
 
             const totalHotelCostTWD = matchedHotels.reduce((s, h) => s + (h.priceTWD || 0), 0);
+            const isArchivedOrPastTrip = Boolean(trip.isArchived || trip.isPast);
 
-            // ── 警告處理 ──────────────────────────────────────────────────
+            // ── 警告處理（已封存或已結束的歷史行程不產生住宿警告） ────────
             const hotelWarnings = (() => {
+                if (isArchivedOrPastTrip) return [];
+
                 const warns = [];
                 const tripDays = trip.tripDays || 0;
 
@@ -130,7 +158,9 @@ export function useItinerary(decoratedTrips, hotels, activities = []) {
                     return locWarns;
                 };
 
-                const valid = [...matchedHotels].filter(h => h.checkIn && h.checkOut).sort((a, b) => a.checkIn.localeCompare(b.checkIn));
+                const valid = [...matchedHotels]
+                    .filter(h => h.checkIn && h.checkOut && !h.isArchived && !h.isPast)
+                    .sort((a, b) => a.checkIn.localeCompare(b.checkIn));
                 if (reqStart >= reqEnd) return checkLocationWarnings(valid);
                 if (tripDays > 1 && matchedHotels.length === 0) {
                     warns.push('⚠️ 此趟次尚未安排任何住宿');
@@ -148,7 +178,15 @@ export function useItinerary(decoratedTrips, hotels, activities = []) {
                 return [...warns, ...checkLocationWarnings(valid)];
             })();
 
-            return { ...trip, matchedHotels, matchedActivities, totalHotelCostTWD, hotelWarnings, hasWarning: hotelWarnings.length > 0 || trip.isOpenJaw };
+            return {
+                ...trip,
+                customLabel: buildReadableTripLabel(trip),
+                matchedHotels,
+                matchedActivities,
+                totalHotelCostTWD,
+                hotelWarnings,
+                hasWarning: !isArchivedOrPastTrip && (hotelWarnings.length > 0 || trip.isOpenJaw),
+            };
         });
 
         // 2. 處理孤兒物件 (Orphaned Items)

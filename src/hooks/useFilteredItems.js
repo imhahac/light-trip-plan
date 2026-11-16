@@ -27,7 +27,7 @@ export function useFilteredItems(items, searchTerm, filterStatus, type, tripLabe
                     } else if (type === 'activities') {
                         fields = [item.title, item.location, item.notes, item.category];
                     } else if (type === 'itinerary') {
-                        const customLabel = (tripLabels && item.id) ? (tripLabels[item.id] || '') : '';
+                        const customLabel = (tripLabels && item.id) ? (tripLabels[item.id] || item.customLabel || '') : (item.customLabel || '');
                         fields = [customLabel];
                         if (Array.isArray(item.segments)) {
                             item.segments.forEach(s => {

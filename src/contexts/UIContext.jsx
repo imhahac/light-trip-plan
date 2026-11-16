@@ -1,13 +1,44 @@
-import React, { createContext, useContext, useState, useRef } from 'react';
+import React, { createContext, useContext, useState, useRef, useCallback } from 'react';
 import { validateConfig } from '../constants/config';
+import { STORAGE_KEYS } from '../constants/storageKeys';
+import { useLocalStorage } from '../hooks/useLocalStorage';
 
 const UIContext = createContext();
 
+const VALID_TABS = new Set([
+    'planner',
+    'timeline',
+    'reservations',
+    'calendar',
+    'map',
+    'costs',
+    'analytics',
+    'packing',
+    'list',
+    'hotels',
+    'activities',
+]);
+
+const WORKSPACE_BY_TAB = {
+    planner: 'planning',
+    timeline: 'planning',
+    reservations: 'planning',
+    calendar: 'planning',
+    map: 'planning',
+    costs: 'finance',
+    analytics: 'finance',
+    packing: 'prep',
+    list: 'tickets',
+    hotels: 'tickets',
+    activities: 'tickets',
+};
+
 export function UIProvider({ children }) {
-    const [activeTab, setActiveTab] = useState('timeline');
+    const [storedActiveTab, setStoredActiveTab] = useLocalStorage(STORAGE_KEYS.UI_ACTIVE_TAB, 'timeline');
+    const [workspaceTabs, setWorkspaceTabs] = useLocalStorage(STORAGE_KEYS.UI_WORKSPACE_TABS, {});
     const [searchTerm, setSearchTerm] = useState('');
-    const [filterStatus, setFilterStatus] = useState('all');
-    const [ticketScope, setTicketScope] = useState('trip'); // 'trip' | 'all'
+    const [filterStatus, setFilterStatus] = useLocalStorage(STORAGE_KEYS.UI_FILTER_STATUS, 'all');
+    const [ticketScope, setTicketScope] = useLocalStorage(STORAGE_KEYS.UI_TICKET_SCOPE, 'trip'); // 'trip' | 'all'
     const [configWarnings, setConfigWarnings] = useState([]);
     
     // Map selection states
@@ -15,6 +46,24 @@ export function UIProvider({ children }) {
     const [selectedTripIdForMap, setSelectedTripIdForMap] = useState(null);
 
     const fileInputRef = useRef(null);
+
+    const activeTab = VALID_TABS.has(storedActiveTab) ? storedActiveTab : 'timeline';
+
+    const setActiveTab = useCallback((nextTabOrUpdater) => {
+        setStoredActiveTab((prev) => {
+            const current = VALID_TABS.has(prev) ? prev : 'timeline';
+            const resolved = typeof nextTabOrUpdater === 'function' ? nextTabOrUpdater(current) : nextTabOrUpdater;
+            const validNext = VALID_TABS.has(resolved) ? resolved : 'timeline';
+            const wsId = WORKSPACE_BY_TAB[validNext];
+            if (wsId) {
+                setWorkspaceTabs((prevWs) => ({
+                    ...(prevWs || {}),
+                    [wsId]: validNext,
+                }));
+            }
+            return validNext;
+        });
+    }, [setStoredActiveTab, setWorkspaceTabs]);
 
     React.useEffect(() => {
         const warnings = validateConfig();
@@ -38,6 +87,7 @@ export function UIProvider({ children }) {
 
     const value = {
         activeTab, setActiveTab,
+        workspaceTabs, setWorkspaceTabs,
         searchTerm, setSearchTerm,
         filterStatus, setFilterStatus,
         ticketScope, setTicketScope,

@@ -92,7 +92,7 @@ const CONTENT_COMPONENT_BY_TAB = {
 };
 
 function AppContent() {
-    const { activeTab, setActiveTab, ticketScope = 'trip', setTicketScope } = useUIContext();
+    const { activeTab, setActiveTab, workspaceTabs = {}, ticketScope = 'trip', setTicketScope } = useUIContext();
     const { activeTrip, viewMode = 'split', setViewMode, isLoading } = useTrek();
     const { renderError } = useFilterContext();
 
@@ -137,7 +137,7 @@ function AppContent() {
                                 <button
                                     key={ws.id}
                                     onClick={() => {
-                                        if (!isActiveWs) setActiveTab(ws.defaultTab);
+                                        if (!isActiveWs) setActiveTab(workspaceTabs?.[ws.id] || ws.defaultTab);
                                     }}
                                     className={`px-5 py-3 text-xs font-bold rounded-t-xl transition-all border-b-2 flex items-center gap-2 ${
                                         isActiveWs
@@ -267,7 +267,7 @@ function AppContent() {
                     &copy; {new Date().getFullYear()} Light Trip Plan. 智能離線旅遊規劃系統.
                 </footer>
             </div>
-            <BottomNav WORKSPACES={WORKSPACES} TABS={TABS} activeTab={activeTab} setActiveTab={setActiveTab} />
+            <BottomNav WORKSPACES={WORKSPACES} TABS={TABS} activeTab={activeTab} setActiveTab={setActiveTab} workspaceTabs={workspaceTabs} />
         </div>
     );
 }

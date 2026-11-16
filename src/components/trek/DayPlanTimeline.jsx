@@ -8,7 +8,7 @@
  * - 支援景點搜尋 (OSM Nominatim) 與維基百科圖文富化
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
     Calendar, 
     Plus, 
@@ -41,12 +41,14 @@ import { getOSRMRoute, getGoogleMapsRouteUrl } from '../../services/map/routeSer
 import { searchPlaces, enrichPlaceWithWikipedia } from '../../services/places/placeSearchService';
 import { getDayWeather } from '../../services/weather/weatherService';
 import { extractRegionName, getCityDefaultCoordinates, AIRPORT_COORDINATES } from '../../utils/geoUtils';
+import { STORAGE_KEYS } from '../../constants/storageKeys';
+import { useLocalStorage } from '../../hooks/useLocalStorage';
 import { logger } from '../../utils/logger';
 
 export default function DayPlanTimeline({ onSelectDayPlaces, onRouteCalculated, unifiedReservations = null }) {
     const { activeTrip, reservations = [], dayPlans, refreshTrips } = useTrek();
     const activeReservations = unifiedReservations || reservations;
-    const [selectedDayIndex, setSelectedDayIndex] = useState(0);
+    const [selectedDayByTrip, setSelectedDayByTrip] = useLocalStorage(STORAGE_KEYS.PLANNER_SELECTED_DAY_BY_TRIP, {});
     const [dayPlacesMap, setDayPlacesMap] = useState({}); // { [dayIndex]: places[] }
     const [weatherMap, setWeatherMap] = useState({}); // { [dateStr]: weatherObj }
     const [searchQuery, setSearchQuery] = useState('');
@@ -80,6 +82,20 @@ export default function DayPlanTimeline({ onSelectDayPlaces, onRouteCalculated, 
         }
         return days;
     }, [activeTrip?.startDate, activeTrip?.endDate]);
+
+    const rawSelectedDayIndex = activeTrip?.id ? (selectedDayByTrip?.[activeTrip.id] ?? 0) : 0;
+    const selectedDayIndex = (tripDays.length > 0 && rawSelectedDayIndex >= 0 && rawSelectedDayIndex < tripDays.length)
+        ? rawSelectedDayIndex
+        : 0;
+
+    const setSelectedDayIndex = useCallback((idxOrUpdater) => {
+        if (!activeTrip?.id) return;
+        setSelectedDayByTrip((prev) => {
+            const current = prev?.[activeTrip.id] ?? 0;
+            const next = typeof idxOrUpdater === 'function' ? idxOrUpdater(current) : idxOrUpdater;
+            return { ...(prev || {}), [activeTrip.id]: next };
+        });
+    }, [activeTrip?.id, setSelectedDayByTrip]);
 
     // 景點修改狀態 (支援改名、備註與更換所屬日程/日期)
     const [editingPlace, setEditingPlace] = useState(null);

@@ -8,6 +8,7 @@
 import React, { useState } from 'react';
 import PropTypes from 'prop-types';
 import { ArrowRight } from 'lucide-react';
+import { buildReadableTripLabel } from '../hooks/useItinerary';
 
 export default function TripCalendar({ trips = [], tripLabels = {} }) {
     const [currentMonth, setCurrentMonth] = useState(new Date());
@@ -65,13 +66,16 @@ export default function TripCalendar({ trips = [], tripLabels = {} }) {
         });
     };
 
-    // ✅ 直接彙整 trips 中已計算好的 hotelWarnings，不重複計算
-    const hotelWarnings = trips.flatMap(trip => {
-        const warns = trip.hotelWarnings || [];
-        if (!warns.length) return [];
-        const label = tripLabels[trip.id] || `行程 ${trip.id}`;
-        return warns.map(w => `[${label}] ${w.replace(/^⚠️\s*/, '')}`);
-    }).map(w => `⚠️ ${w}`);
+    // ✅ 直接彙整未封存且未過期 trips 中已計算好的 hotelWarnings，並使用易讀行程名稱取代內部 ticket ID
+    const hotelWarnings = trips
+        .filter(trip => !trip.isPast && !trip.isArchived)
+        .flatMap(trip => {
+            const warns = trip.hotelWarnings || [];
+            if (!warns.length) return [];
+            const label = tripLabels[trip.id] || trip.customLabel || buildReadableTripLabel(trip);
+            return warns.map(w => `[${label}] ${w.replace(/^⚠️\s*/, '')}`);
+        })
+        .map(w => `⚠️ ${w}`);
 
     // 週日起始的表頭
     const dayNames = ['日', '一', '二', '三', '四', '五', '六'];

@@ -9,15 +9,16 @@ import {
 } from './DataContext';
 import { useFilteredItems } from '../hooks/useFilteredItems';
 import { useDecoratedTrips } from '../hooks/useDecoratedTrips';
-import { useItinerary } from '../hooks/useItinerary';
+import { useItinerary, buildReadableTripLabel } from '../hooks/useItinerary';
 import { applyTripOverrides } from '../utils/tripOverrides';
 import { isDateOverlap } from '../services/reservations/unifiedReservationService';
+import { isTripArchivedOrEnded } from '../services/trips/tripStatusService';
 
 const FilterContext = createContext();
 
 export function FilterProvider({ children }) {
     const { searchTerm, filterStatus, ticketScope = 'trip', selectedTripIdForMap } = useUIContext();
-    const { activeTrip, isSharedView, sharedTripData } = useOptionalTrek();
+    const { activeTrip, trips: trekTrips = [], isSharedView, sharedTripData } = useOptionalTrek();
     const { tickets, tripLabels, trips } = useTicketDataContext();
     const { rawHotels } = useHotelDataContext();
     const { activities } = useActivityDataContext();
@@ -34,10 +35,77 @@ export function FilterProvider({ children }) {
         renderError, safeTickets, safeHotels, safeActivities
     } = useDecoratedTrips(displayTrips, tickets, rawHotels, activities);
 
+    // 2.5 串接 TrekContext 旅程狀態（封存/結束判定 + 易讀標題關聯）
+    const enrichedDecoratedTrips = useMemo(() => {
+        if (!Array.isArray(decoratedTrips)) return [];
+        const safeTrekTrips = Array.isArray(trekTrips) ? trekTrips : [];
+
+        return decoratedTrips.map(trip => {
+            const segs = trip.segments || [];
+            const tripStartDate = segs[0]?.date;
+            const tripEndDate = segs[segs.length - 1]?.arrivalDate || segs[segs.length - 1]?.date;
+
+            const matchedTrekTrip = safeTrekTrips.find(tt => {
+                if (!tt) return false;
+                if (tt.id === trip.id || (tt.legacyTripKey && tt.legacyTripKey === trip.id)) return true;
+                if (segs.some(s => s?.ticket?.tripId && s.ticket.tripId === tt.id)) return true;
+                if (tripStartDate && tripEndDate && tt.startDate && tt.endDate) {
+                    return isDateOverlap(tripStartDate, tripEndDate, tt.startDate, tt.endDate);
+                }
+                return false;
+            });
+
+            const isArchived = Boolean(
+                trip.isArchived ||
+                (matchedTrekTrip && isTripArchivedOrEnded(matchedTrekTrip))
+            );
+            const customLabel = (tripLabels && tripLabels[trip.id])
+                || matchedTrekTrip?.title
+                || trip.customLabel
+                || buildReadableTripLabel(trip);
+
+            return {
+                ...trip,
+                isArchived,
+                customLabel,
+            };
+        });
+    }, [decoratedTrips, trekTrips, tripLabels]);
+
+    const enrichedRawHotels = useMemo(() => {
+        if (!Array.isArray(rawHotels)) return [];
+        const safeTrekTrips = Array.isArray(trekTrips) ? trekTrips : [];
+        if (safeTrekTrips.length === 0) return rawHotels;
+
+        return rawHotels.map(hotel => {
+            if (!hotel) return hotel;
+            // 若飯店明確歸屬於某趟 TrekTrip，直接依該趟狀態判定
+            if (hotel.tripId) {
+                const ownerTrip = safeTrekTrips.find(tt => tt && tt.id === hotel.tripId);
+                if (ownerTrip) {
+                    return { ...hotel, isArchived: isTripArchivedOrEnded(ownerTrip) };
+                }
+            }
+            // 若依日期落在已封存/已結束旅程，且未與任何進行中/規劃中旅程重疊，視為封存住宿
+            if (hotel.checkIn && hotel.checkOut) {
+                const overlapsActive = safeTrekTrips.some(
+                    tt => tt && !isTripArchivedOrEnded(tt) && isDateOverlap(hotel.checkIn, hotel.checkOut, tt.startDate, tt.endDate)
+                );
+                const overlapsArchived = safeTrekTrips.some(
+                    tt => tt && isTripArchivedOrEnded(tt) && isDateOverlap(hotel.checkIn, hotel.checkOut, tt.startDate, tt.endDate)
+                );
+                if (overlapsArchived && !overlapsActive) {
+                    return { ...hotel, isArchived: true };
+                }
+            }
+            return hotel;
+        });
+    }, [rawHotels, trekTrips]);
+
     // 3. 建立完整時間軸資料
     const computedItinerary = useItinerary(
-        Array.isArray(decoratedTrips) ? decoratedTrips : [],
-        Array.isArray(rawHotels) ? rawHotels : [],
+        enrichedDecoratedTrips,
+        enrichedRawHotels,
         Array.isArray(activities) ? activities : []
     );
 

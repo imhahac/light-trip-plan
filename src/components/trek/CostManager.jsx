@@ -50,6 +50,8 @@ import { SUPPORTED_CURRENCIES, getExchangeRate, freezeExchangeRate } from '../..
 import { splitEqual, splitByWeights, calculateNetBalances } from '../../services/costs/splitCalculator';
 import { calculateSettleUpTransactions } from '../../services/costs/settleUpService';
 import { exportExpensesToCSV } from '../../services/costs/csvExportService';
+import { STORAGE_KEYS } from '../../constants/storageKeys';
+import { useLocalStorage } from '../../hooks/useLocalStorage';
 
 export const EXPENSE_CATEGORIES = [
     { key: 'food', label: '餐飲美食', emoji: '🍽️' },
@@ -91,27 +93,26 @@ export default function CostManager() {
     const { tripBudgets = {} } = useTicketDataContext();
 
     // 範圍模式：'trip' (預設：僅當前選定行程) | 'all' (全域：所有行程整合總匯)
-    const [scope, setScope] = useState('trip');
+    const [scope, setScope] = useLocalStorage(STORAGE_KEYS.COST_SCOPE, 'trip');
 
     // 視圖模式：'split' (多幣別拆帳) | 'analytics' (成本與CP值分析) | 'all' (全景整合)
-    const [subView, setSubView] = useState(() => {
-        return activeTab === 'analytics' ? 'analytics' : 'split';
-    });
+    const [subView, setSubView] = useLocalStorage(
+        STORAGE_KEYS.COST_SUB_VIEW,
+        activeTab === 'analytics' ? 'analytics' : 'split'
+    );
 
-    // 當外部 Workspace tab 切換時同步內部視圖
+    // 當外部切換至舊版 analytics 頁籤時同步內部視圖（一般 costs 頁籤保留使用者上次選定的 subView）
     useEffect(() => {
         if (activeTab === 'analytics') {
             setSubView('analytics');
-        } else if (activeTab === 'costs') {
-            setSubView('split');
         }
-    }, [activeTab]);
+    }, [activeTab, setSubView]);
 
     const [customExpenses, setCustomExpenses] = useState([]);
     const [isAddModalOpen, setIsAddModalOpen] = useState(false);
     const [isSettleModalOpen, setIsSettleModalOpen] = useState(false);
     const [editingExpense, setEditingExpense] = useState(null);
-    const [sortBy, setSortBy] = useState('date-asc'); // 'date-asc' | 'date-desc' | 'amount-desc' | 'amount-asc' | 'category'
+    const [sortBy, setSortBy] = useLocalStorage(STORAGE_KEYS.COST_SORT_BY, 'date-asc'); // 'date-asc' | 'date-desc' | 'amount-desc' | 'amount-asc' | 'category'
 
     // 新增支出表單狀態
     const [formTitle, setFormTitle] = useState('');
