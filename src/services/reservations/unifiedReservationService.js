@@ -135,11 +135,12 @@ export function getUnifiedReservations(trip, trekReservations = [], tickets = []
 
             if (existingTitleSet.has(title.toLowerCase())) return;
 
-            const costPerSeg = Math.round(
-                ticket.type === 'oneway'
-                    ? (ticket.priceTWD || ticket.price || 0)
-                    : ((ticket.priceTWD || ticket.price || 0) / (segs.length || 1))
-            );
+            const segDivisor = ticket.type === 'oneway' ? 1 : (segs.length || 1);
+            const rawPriceTWD = Number(ticket.priceTWD ?? ticket.price) || 0;
+            const rawOriginalPrice = Number(ticket.price ?? ticket.priceTWD) || 0;
+            const originalCurrency = ticket.currency || 'TWD';
+            const costPerSegTWD = Math.round(rawPriceTWD / segDivisor);
+            const originalCostPerSeg = Math.round(rawOriginalPrice / segDivisor);
 
             list.push({
                 id: `unified_ticket_${ticket.id}_${seg.id || idx}`,
@@ -151,8 +152,11 @@ export function getUnifiedReservations(trip, trekReservations = [], tickets = []
                 title: title || '航班機票',
                 confirmationCode: code,
                 status: ticket.isPaid || ticket.paid ? 'confirmed' : 'pending',
-                cost: costPerSeg,
-                currency: ticket.currency || 'TWD',
+                cost: costPerSegTWD,
+                currency: (ticket.priceTWD !== undefined || originalCurrency === 'TWD') ? 'TWD' : originalCurrency,
+                costTWD: costPerSegTWD,
+                originalCost: originalCostPerSeg,
+                originalCurrency,
                 startDate: segDate ? (seg.time ? `${segDate}T${seg.time}` : segDate) : tripStart,
                 endDate: seg.arrivalDate ? (seg.arrivalTime ? `${seg.arrivalDate}T${seg.arrivalTime}` : seg.arrivalDate) : undefined,
                 notes: `${ticket.airline ? `航空公司: ${ticket.airline}` : ''}${seg.segmentType ? ` · ${seg.segmentType}` : ''}`.trim(),
@@ -183,6 +187,10 @@ export function getUnifiedReservations(trip, trekReservations = [], tickets = []
         const title = hotel.name || '飯店住宿';
         if (existingTitleSet.has(title.toLowerCase())) return;
 
+        const hotelCostTWD = Number(hotel.priceTWD ?? hotel.priceTotal) || 0;
+        const hotelOriginalCost = Number(hotel.priceTotal ?? hotel.price ?? hotel.priceTWD) || 0;
+        const hotelOriginalCurrency = hotel.currency || 'TWD';
+
         list.push({
             id: `unified_hotel_${hotel.id}`,
             tripId: trip?.id,
@@ -193,8 +201,11 @@ export function getUnifiedReservations(trip, trekReservations = [], tickets = []
             title: title,
             confirmationCode: code,
             status: 'confirmed',
-            cost: Number(hotel.priceTWD || hotel.priceTotal) || 0,
-            currency: hotel.currency || 'TWD',
+            cost: hotelCostTWD,
+            currency: (hotel.priceTWD !== undefined || hotelOriginalCurrency === 'TWD') ? 'TWD' : hotelOriginalCurrency,
+            costTWD: hotelCostTWD,
+            originalCost: hotelOriginalCost,
+            originalCurrency: hotelOriginalCurrency,
             startDate: checkIn,
             endDate: checkOut,
             notes: hotel.address ? `地址: ${hotel.address}` : '',
@@ -227,6 +238,10 @@ export function getUnifiedReservations(trip, trekReservations = [], tickets = []
         else if (act.category === 'dining') mappedType = 'restaurant';
         else if (act.category === 'voucher') mappedType = 'ticket';
 
+        const actCostTWD = Number(act.priceTWD ?? act.cost ?? act.price) || 0;
+        const actOriginalCost = Number(act.price ?? act.cost ?? act.priceTWD) || 0;
+        const actOriginalCurrency = act.currency || 'TWD';
+
         list.push({
             id: `unified_act_${act.id}`,
             tripId: trip?.id,
@@ -237,8 +252,11 @@ export function getUnifiedReservations(trip, trekReservations = [], tickets = []
             title: title,
             confirmationCode: code,
             status: 'confirmed',
-            cost: Number(act.priceTWD || act.cost) || 0,
-            currency: 'TWD',
+            cost: actCostTWD,
+            currency: (act.priceTWD !== undefined || actOriginalCurrency === 'TWD') ? 'TWD' : actOriginalCurrency,
+            costTWD: actCostTWD,
+            originalCost: actOriginalCost,
+            originalCurrency: actOriginalCurrency,
             startDate: actStart,
             endDate: actEnd,
             notes: act.notes || (act.location ? `地點: ${act.location}` : ''),

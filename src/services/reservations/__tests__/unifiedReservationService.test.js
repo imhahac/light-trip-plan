@@ -105,5 +105,29 @@ describe('unifiedReservationService', () => {
         expect(inbound.flightDetails.from).toBe('HND (東京羽田)');
         expect(inbound.flightDetails.to).toBe('TSA (台北松山)');
     });
+
+    it('should not mix priceTWD with foreign currency code for hotels, tickets, and activities', () => {
+        const jpyHotels = [
+            {
+                id: 'h-jpy-1',
+                name: '東橫INN 東京日本橋馬喰町',
+                checkIn: '2026-10-16',
+                checkOut: '2026-10-17',
+                currency: 'JPY',
+                priceTotal: 8835,
+                priceTWD: 1781,
+                confirmationNo: '6461161'
+            }
+        ];
+
+        const unified = getUnifiedReservations(mockTrip, [], [], jpyHotels, []);
+        expect(unified.length).toBe(1);
+        const hotelRes = unified[0];
+        expect(hotelRes.cost).toBe(1781);
+        expect(hotelRes.currency).toBe('TWD');
+        expect(hotelRes.costTWD).toBe(1781);
+        expect(hotelRes.originalCost).toBe(8835);
+        expect(hotelRes.originalCurrency).toBe('JPY');
+    });
 });
 

@@ -360,10 +360,21 @@ export default function ReservationManager({ unifiedReservations = null }) {
                                 {/* 右側金額與操作 */}
                                 <div className="flex items-center justify-between sm:justify-end w-full sm:w-auto gap-3 border-t sm:border-t-0 pt-2 sm:pt-0">
                                     <div className="text-left sm:text-right">
-                                        <div className="font-bold text-base text-slate-900">
-                                            ${res.cost?.toLocaleString() || 0}
-                                            <span className="text-xs font-normal text-slate-400 ml-1">{res.currency || 'TWD'}</span>
-                                        </div>
+                                        {(res.currency || 'TWD') === 'TWD' ? (
+                                            <div className="font-bold text-base text-slate-900">
+                                                NT$ {Math.round(res.costTWD ?? res.cost ?? 0).toLocaleString()}
+                                            </div>
+                                        ) : (
+                                            <div className="font-bold text-base text-slate-900">
+                                                ${Math.round(res.cost ?? 0).toLocaleString()}
+                                                <span className="text-xs font-normal text-slate-400 ml-1">{res.currency}</span>
+                                            </div>
+                                        )}
+                                        {res.originalCurrency && res.originalCurrency !== 'TWD' && Number(res.originalCost) > 0 && (
+                                            <div className="text-[11px] font-medium text-slate-400">
+                                                {res.originalCurrency} {Math.round(res.originalCost).toLocaleString()}
+                                            </div>
+                                        )}
                                     </div>
                                     {Number(res.cost) > 0 && (
                                         <button
