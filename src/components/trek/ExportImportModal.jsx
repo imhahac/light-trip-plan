@@ -34,6 +34,15 @@ import {
     buildFullJsonExport,
     getJsonImportTemplate,
 } from '../../services/import/jsonTripImportService';
+import {
+    getStoredApiSyncConfig,
+    saveApiSyncConfig,
+    getLastSyncedRevision,
+    setLastSyncedRevision,
+    pullFromIngestApi,
+    pushToIngestApi,
+    buildIngestCurlExamples,
+} from '../../services/api/ingestApiService';
 import { generateTripIcs, downloadIcsFile } from '../../services/export/icsExportService';
 import { generateTripGpx, downloadGpxFile } from '../../services/export/gpxExportService';
 import { shiftTripDates, calculateDayDifference } from '../../services/trips/tripShiftService';
@@ -112,6 +121,10 @@ export default function ExportImportModal({ isOpen, onClose }) {
     // ── 手冊附加資料狀態 ───────────────────────────────────────────────────
     const [packingItems, setPackingItems] = useState([]);
     const [expenses, setExpenses] = useState([]);
+
+    // ── 外部寫入 API 同步配置狀態 ──────────────────────────────────────────
+    const [apiConfig, setApiConfig] = useState(() => getStoredApiSyncConfig());
+    const [isSyncingApi, setIsSyncingApi] = useState(false);
 
     useEffect(() => {
         setNewStartDate(activeTrip?.startDate || '');
@@ -417,8 +430,125 @@ export default function ExportImportModal({ isOpen, onClose }) {
 
     const dayDiff = activeTrip ? calculateDayDifference(activeTrip.startDate, newStartDate) : 0;
 
+    // ── API 寫入與拉取操作 ──────────────────────────────────────────────────
+    const handleSaveApiConfig = () => {
+        const saved = saveApiSyncConfig(apiConfig);
+        setApiConfig(saved);
+        toast.success('已儲存 API 寫入與自動拉取設定！');
+    };
+
+    const handleForcePullFromApi = async () => {
+        const saved = saveApiSyncConfig(apiConfig);
+        setApiConfig(saved);
+        if (!saved.apiToken) {
+            toast.error('請先填寫 API Secret Token');
+            return;
+        }
+        setIsSyncingApi(true);
+        try {
+            const res = await pullFromIngestApi({
+                endpointUrl: saved.endpointUrl,
+                apiToken: saved.apiToken,
+                channel: saved.channel,
+                sinceRevision: -1, // 強制完整拉取
+            });
+
+            if (!res?.data) {
+                toast.info(`雲端通道 (${saved.channel}) 目前尚無寫入資料`);
+                return;
+            }
+
+            const parsed = parseUnifiedJsonInput(JSON.stringify(res.data), { activeTrip });
+            const importRes = await executeUnifiedJsonImport({
+                parsed,
+                activeTrip,
+                mode: saved.importMode || 'replace',
+                tripTarget: activeTrip ? 'current' : 'new',
+                dataSetters: {
+                    setTickets: ticketContext.setTickets,
+                    setTripLabels: ticketContext.setTripLabels,
+                    setTripBudgets: ticketContext.setTripBudgets,
+                    setHotels: hotelContext.setHotels,
+                    setActivities: activityContext.setActivities,
+                    setOverrides: overrideContext.setOverrides,
+                },
+            });
+
+            setLastSyncedRevision(saved.channel, res.revision || 1);
+            await refreshTrips(importRes.targetTripId || activeTrip?.id || null);
+            toast.success(`🎉 已從雲端 API 通道 (${saved.channel}) 拉取並同步完成！(版本 #${res.revision || 1})`);
+            onClose();
+        } catch (err) {
+            toast.error(`API 拉取失敗：${err.message}`);
+        } finally {
+            setIsSyncingApi(false);
+        }
+    };
+
+    const handlePushCurrentToApi = async () => {
+        const saved = saveApiSyncConfig(apiConfig);
+        setApiConfig(saved);
+        if (!saved.apiToken) {
+            toast.error('請先填寫 API Secret Token');
+            return;
+        }
+        setIsSyncingApi(true);
+        try {
+            const [places, pItems, expItems, todos] = activeTrip
+                ? await Promise.all([
+                    placeItemRepo.getByTrip(activeTrip.id).catch(() => []),
+                    packingRepo.getByTrip(activeTrip.id).catch(() => []),
+                    expenseRepo.getByTrip(activeTrip.id).catch(() => []),
+                    todoRepo.getByTrip(activeTrip.id).catch(() => []),
+                ])
+                : [[], [], [], []];
+
+            const payload = buildFullJsonExport({
+                trip: activeTrip,
+                dayPlans,
+                places,
+                reservations,
+                expenses: expItems,
+                packingItems: pItems,
+                todos,
+                tickets,
+                hotels: rawHotels,
+                activities,
+                tripLabels,
+                tripBudgets,
+                tripOverrides,
+            });
+
+            const res = await pushToIngestApi({
+                endpointUrl: saved.endpointUrl,
+                apiToken: saved.apiToken,
+                channel: saved.channel,
+                payload,
+                mode: 'replace',
+            });
+
+            setLastSyncedRevision(saved.channel, res.revision || 1);
+            toast.success(`☁️ 已將目前行程推送至 API 通道 (${saved.channel})！版本 #${res.revision}`);
+        } catch (err) {
+            toast.error(`API 推送失敗：${err.message}`);
+        } finally {
+            setIsSyncingApi(false);
+        }
+    };
+
+    const handleCopyCurlExample = async () => {
+        const text = buildIngestCurlExamples(apiConfig);
+        try {
+            await navigator.clipboard.writeText(text);
+            toast.success('已複製 curl API 寫入指令範例！');
+        } catch {
+            toast.error('複製失敗，請手動選取下方指令');
+        }
+    };
+
     const tabs = [
         { key: 'json_import', label: '📦 JSON 整包匯入' },
+        { key: 'api_sync', label: '🔌 API 寫入接口' },
         ...(activeTrip ? [{ key: 'import', label: '📥 景點匯入' }] : []),
         { key: 'export', label: '📤 資料匯出' },
         ...(activeTrip ? [{ key: 'shift', label: '🗓️ 日期平移' }] : []),
@@ -613,6 +743,121 @@ export default function ExportImportModal({ isOpen, onClose }) {
                                         </button>
                                     </div>
                                 )}
+                            </div>
+                        )}
+
+                        {/* ── Tab 0.5: 具備認證之外部 API 寫入與自動拉取接口 ───────── */}
+                        {activeTab === 'api_sync' && (
+                            <div className="space-y-4">
+                                <div className="bg-indigo-50/70 border border-indigo-100 rounded-2xl p-3 text-[11px] text-indigo-900 leading-relaxed">
+                                    透過 Cloudflare Worker <code className="font-mono font-bold">/api/v1/ingest</code> 接口，外部腳本、AI 工具或 <code className="font-mono font-bold">curl</code> 可帶入 <code className="font-mono font-bold">Authorization: Bearer &lt;TOKEN&gt;</code> 或 <code className="font-mono font-bold">X-API-Key</code> 直接寫入單筆機票／飯店／活動或整包行程，網頁重新整理時將自動拉取最新版本。
+                                </div>
+
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <div className="sm:col-span-2">
+                                        <label className="block text-[11px] font-bold text-slate-700 mb-1">Worker API 端點網址 (Endpoint URL)</label>
+                                        <input
+                                            type="url"
+                                            value={apiConfig.endpointUrl}
+                                            onChange={(e) => setApiConfig((p) => ({ ...p, endpointUrl: e.target.value }))}
+                                            placeholder="https://flight-api-proxy.your-account.workers.dev"
+                                            className="w-full border border-gray-300 rounded-xl px-3 py-2 text-xs font-mono focus:outline-none focus:border-indigo-500"
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-[11px] font-bold text-slate-700 mb-1">API Secret Token (認證金鑰)</label>
+                                        <input
+                                            type="password"
+                                            value={apiConfig.apiToken}
+                                            onChange={(e) => setApiConfig((p) => ({ ...p, apiToken: e.target.value }))}
+                                            placeholder="對應 Worker 的 API_SECRET_TOKEN"
+                                            className="w-full border border-gray-300 rounded-xl px-3 py-2 text-xs font-mono focus:outline-none focus:border-indigo-500"
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-[11px] font-bold text-slate-700 mb-1">雲端通道名稱 (Channel)</label>
+                                        <input
+                                            type="text"
+                                            value={apiConfig.channel}
+                                            onChange={(e) => setApiConfig((p) => ({ ...p, channel: e.target.value }))}
+                                            placeholder="default"
+                                            className="w-full border border-gray-300 rounded-xl px-3 py-2 text-xs font-mono focus:outline-none focus:border-indigo-500"
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-[11px] font-bold text-slate-700 mb-1">拉取後本地寫入策略</label>
+                                        <select
+                                            value={apiConfig.importMode || 'replace'}
+                                            onChange={(e) => setApiConfig((p) => ({ ...p, importMode: e.target.value }))}
+                                            className="w-full border border-gray-300 rounded-xl px-3 py-2 text-xs bg-white font-bold text-slate-800"
+                                        >
+                                            <option value="replace">覆寫同步（以雲端最新完整狀態為主）</option>
+                                            <option value="merge">合併同步（保留本地其他項目）</option>
+                                        </select>
+                                    </div>
+
+                                    <div className="flex items-center pt-4">
+                                        <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-slate-700">
+                                            <input
+                                                type="checkbox"
+                                                checked={apiConfig.autoPullOnLoad !== false}
+                                                onChange={(e) => setApiConfig((p) => ({ ...p, autoPullOnLoad: e.target.checked }))}
+                                                className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                                            />
+                                            <span>每次開頁／重新整理自動拉取最新寫入</span>
+                                        </label>
+                                    </div>
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-2 pt-1">
+                                    <button
+                                        type="button"
+                                        onClick={handleSaveApiConfig}
+                                        className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition"
+                                    >
+                                        💾 儲存設定
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={handleForcePullFromApi}
+                                        disabled={isSyncingApi}
+                                        className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition"
+                                    >
+                                        {isSyncingApi ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                                        <span>立即從 API 拉取同步</span>
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={handlePushCurrentToApi}
+                                        disabled={isSyncingApi}
+                                        className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition"
+                                    >
+                                        {isSyncingApi ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+                                        <span>將目前行程推送至 API 通道</span>
+                                    </button>
+                                </div>
+
+                                <div className="border border-slate-200 rounded-2xl overflow-hidden">
+                                    <div className="bg-slate-100 px-3 py-2 flex items-center justify-between border-b border-slate-200">
+                                        <span className="text-[11px] font-bold text-slate-700">
+                                            💻 外部寫入 curl 範例（目前同步版本：#{getLastSyncedRevision(apiConfig.channel)}）
+                                        </span>
+                                        <button
+                                            type="button"
+                                            onClick={handleCopyCurlExample}
+                                            className="px-2 py-1 bg-white hover:bg-indigo-50 text-indigo-700 border border-slate-200 rounded-lg text-[11px] font-bold flex items-center gap-1 transition"
+                                        >
+                                            <Copy className="w-3 h-3" />
+                                            <span>複製指令</span>
+                                        </button>
+                                    </div>
+                                    <pre className="p-3 bg-slate-950 text-slate-200 text-[10px] font-mono overflow-x-auto leading-relaxed max-h-48">
+                                        {buildIngestCurlExamples(apiConfig)}
+                                    </pre>
+                                </div>
                             </div>
                         )}
 

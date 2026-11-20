@@ -29,6 +29,7 @@
 
 - **Secrets (機密)**：
   - `CLOUDFLARE_API_TOKEN`: 具備 Workers 編輯權限的 API Token。
+  - `API_SECRET_TOKEN`: 外部寫入與前端自動同步 API (`/api/v1/ingest`) 的授權金鑰（建議設定高強度隨機字串）。
 
 #### 🔑 如何取得 CLOUDFLARE_API_TOKEN？
 1. 登入 [Cloudflare Dashboard](https://dash.cloudflare.com)。
@@ -83,6 +84,16 @@ curl -X POST https://<YOUR_WORKER_URL>/share -H "Content-Type: application/json"
 
 # 測試讀取 (GET)
 curl https://<YOUR_WORKER_URL>/share/<回傳的ID>
+
+# 測試具備認證之 API 單筆寫入 (POST /api/v1/ingest)
+curl -X POST "https://<YOUR_WORKER_URL>/api/v1/ingest?channel=default&mode=merge" \
+  -H "Authorization: Bearer <YOUR_API_SECRET_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"activity": {"id": "act-demo-1", "title": "東京鐵塔夜景", "startDate": "2026-12-24", "time": "20:00"}}'
+
+# 測試具備認證之 API 通道讀取 (GET /api/v1/ingest)
+curl -X GET "https://<YOUR_WORKER_URL>/api/v1/ingest?channel=default" \
+  -H "X-API-Key: <YOUR_API_SECRET_TOKEN>"
 ```
 
 ### 常見問題

@@ -1,9 +1,26 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { MapPin, Globe, Columns, LayoutList, Maximize2 } from 'lucide-react';
+import { toast } from 'sonner';
 import { AppProvider } from './contexts/AppContext';
 import { useFilterContext } from './contexts/FilterContext';
 import { useUIContext } from './contexts/UIContext';
+import {
+    useTicketDataContext,
+    useHotelDataContext,
+    useActivityDataContext,
+    useOverrideDataContext,
+} from './contexts/DataContext';
 import { downloadDiagnosticDump } from './utils/diagnosticDump';
+import {
+    getStoredApiSyncConfig,
+    getLastSyncedRevision,
+    setLastSyncedRevision,
+    pullFromIngestApi,
+} from './services/api/ingestApiService';
+import {
+    parseUnifiedJsonInput,
+    executeUnifiedJsonImport,
+} from './services/import/jsonTripImportService';
 
 import TicketForm from './components/TicketForm';
 import HotelForm from './features/hotels/components/HotelForm';
@@ -93,8 +110,68 @@ const CONTENT_COMPONENT_BY_TAB = {
 
 function AppContent() {
     const { activeTab, setActiveTab, workspaceTabs = {}, ticketScope = 'trip', setTicketScope } = useUIContext();
-    const { activeTrip, viewMode = 'split', setViewMode, isLoading } = useTrek();
+    const { activeTrip, viewMode = 'split', setViewMode, isLoading, isSharedView, refreshTrips } = useTrek();
     const { renderError } = useFilterContext();
+    const ticketContext = useTicketDataContext?.() || {};
+    const hotelContext = useHotelDataContext?.() || {};
+    const activityContext = useActivityDataContext?.() || {};
+    const overrideContext = useOverrideDataContext?.() || {};
+
+    const hasAutoPulledRef = useRef(false);
+
+    // 開頁／重新整理自動檢查 Cloudflare KV 雲端 API 通道是否有外部新寫入資料
+    useEffect(() => {
+        if (isLoading || isSharedView || hasAutoPulledRef.current) return;
+        const cfg = getStoredApiSyncConfig();
+        if (!cfg.apiToken || cfg.autoPullOnLoad === false) return;
+
+        hasAutoPulledRef.current = true;
+        const sinceRev = getLastSyncedRevision(cfg.channel);
+
+        (async () => {
+            try {
+                const res = await pullFromIngestApi({
+                    endpointUrl: cfg.endpointUrl,
+                    apiToken: cfg.apiToken,
+                    channel: cfg.channel,
+                    sinceRevision: sinceRev,
+                });
+                if (!res?.hasUpdate || !res?.data) return;
+
+                const parsed = parseUnifiedJsonInput(JSON.stringify(res.data), { activeTrip });
+                const importRes = await executeUnifiedJsonImport({
+                    parsed,
+                    activeTrip,
+                    mode: cfg.importMode || 'merge',
+                    tripTarget: activeTrip ? 'current' : 'new',
+                    dataSetters: {
+                        setTickets: ticketContext.setTickets,
+                        setTripLabels: ticketContext.setTripLabels,
+                        setTripBudgets: ticketContext.setTripBudgets,
+                        setHotels: hotelContext.setHotels,
+                        setActivities: activityContext.setActivities,
+                        setOverrides: overrideContext.setOverrides,
+                    },
+                });
+                setLastSyncedRevision(cfg.channel, res.revision);
+                await refreshTrips(importRes.targetTripId || activeTrip?.id || null);
+                toast.success(`🔄 已自動從 API 通道 (${cfg.channel}) 同步最新寫入資料 (版本 #${res.revision})`);
+            } catch {
+                // 背景自動拉取若失敗不打斷使用者操作
+            }
+        })();
+    }, [
+        isLoading,
+        isSharedView,
+        activeTrip,
+        refreshTrips,
+        ticketContext.setTickets,
+        ticketContext.setTripLabels,
+        ticketContext.setTripBudgets,
+        hotelContext.setHotels,
+        activityContext.setActivities,
+        overrideContext.setOverrides,
+    ]);
 
     if (renderError) {
         return (

@@ -34,4 +34,7 @@ export const STORAGE_KEYS = {
     PACKING_VISIBILITY: 'ui-packing-visibility',
     PACKING_WEIGHT_ROLLUP: 'ui-packing-weight-rollup',
     PACKING_SHOW_TRASH: 'ui-packing-show-trash',
+    // ── 外部寫入 API 同步配置 ──
+    API_SYNC_CONFIG: 'api-sync-config',
+    API_SYNC_LAST_REVISION: 'api-sync-last-revision',
 };
