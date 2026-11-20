@@ -8,7 +8,9 @@ const categoryIcon = {
     attraction: '🎢',
     transport: '🚆',
     dining: '🍽️',
-    voucher: '🎫'
+    voucher: '🎫',
+    activity: '🏃',
+    shopping: '🛍️',
 };
 
 export default function TripTimelineView({ 

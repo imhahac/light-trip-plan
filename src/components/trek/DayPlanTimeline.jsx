@@ -220,10 +220,13 @@ export default function DayPlanTimeline({ onSelectDayPlaces, onRouteCalculated, 
     const activeDayPlaces = dayPlacesMap[selectedDayIndex] || [];
     const activeDayInfo = tripDays[selectedDayIndex] || { dayIndex: 1, date: activeTrip?.startDate };
 
-    // ── 整合當日預訂 (機票、飯店、活動) ──────────────────────────
+    // ── 整合當日預訂 (機票、飯店、以及尚未轉入當日景點列表之活動) ──────────────────────────
     const dayReservations = useMemo(() => {
         if (!activeDayInfo?.date || !activeReservations || activeReservations.length === 0) return [];
         const dateStr = activeDayInfo.date;
+        const placeNameSet = new Set((activeDayPlaces || []).map(p => (p.name || '').trim()));
+        const placeIdSet = new Set((activeDayPlaces || []).flatMap(p => [p.id, p.activityId].filter(Boolean)));
+
         return activeReservations.filter(r => {
             if (r.type === 'flight') {
                 const depDate = r.flightDetails?.departureTime?.slice(0, 10) || r.startDate?.slice(0, 10);
@@ -237,10 +240,17 @@ export default function DayPlanTimeline({ onSelectDayPlaces, onRouteCalculated, 
                 if (checkIn && checkOut && dateStr > checkIn && dateStr < checkOut) return true;
                 return false;
             }
+            // 若該活動已存在於下方當日景點排程列表 (activeDayPlaces)，不再重複顯示於頂部黑框
+            if (
+                (r.legacyId && (placeIdSet.has(r.legacyId) || placeIdSet.has(`place_${r.legacyId}`))) ||
+                (r.title && placeNameSet.has(r.title.trim()))
+            ) {
+                return false;
+            }
             const eventDate = r.activityDetails?.date?.slice(0, 10) || r.startDate?.slice(0, 10);
             return eventDate === dateStr;
         });
-    }, [activeDayInfo?.date, activeReservations]);
+    }, [activeDayInfo?.date, activeReservations, activeDayPlaces]);
 
     // ── 計算當日天氣代表地區與坐標 ──────────────────────────
     const currentDayLocation = useMemo(() => {
@@ -696,7 +706,12 @@ export default function DayPlanTimeline({ onSelectDayPlaces, onRouteCalculated, 
                                     {idx + 1}
                                 </div>
                                 <div className="flex-1 min-w-0">
-                                    <div className="flex items-center gap-2">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                        {place.time && (
+                                            <span className="text-[11px] font-mono font-bold bg-indigo-50 text-indigo-700 border border-indigo-200/80 px-1.5 py-0.5 rounded shrink-0">
+                                                {place.time}
+                                            </span>
+                                        )}
                                         <span className="font-bold text-sm text-slate-800 truncate">{place.name}</span>
                                         {place.isLocked && (
                                             <span className="text-[10px] bg-amber-100 text-amber-800 font-bold px-1.5 py-0.2 rounded flex items-center gap-0.5">
@@ -704,7 +719,14 @@ export default function DayPlanTimeline({ onSelectDayPlaces, onRouteCalculated, 
                                             </span>
                                         )}
                                     </div>
-                                    <p className="text-xs text-slate-400 truncate mt-0.5">{place.address}</p>
+                                    {place.address && (
+                                        <p className="text-xs text-slate-500 truncate mt-0.5">📍 {place.address}</p>
+                                    )}
+                                    {place.notes && (
+                                        <p className="text-xs text-slate-500 mt-1.5 bg-slate-50 p-2 rounded-lg border border-slate-100 leading-relaxed">
+                                            {place.notes}
+                                        </p>
+                                    )}
 
                                     {/* 維基百科富化簡介 */}
                                     {place.enrichment?.description && (

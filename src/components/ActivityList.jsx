@@ -13,7 +13,9 @@ export default function ActivityList({ activities, onDelete, onEdit }) {
         attraction: '🎢',
         transport: '🚆',
         dining: '🍽️',
-        voucher: '🎫'
+        voucher: '🎫',
+        activity: '🏃',
+        shopping: '🛍️',
     };
 
     const sortedActivities = [...activities].sort((a, b) => {

@@ -42,7 +42,7 @@ export default function ActivityForm() {
 
     const handleSubmit = (e) => {
         e.preventDefault();
-        if (!formData.title || !formData.startDate || !formData.location || !formData.price) {
+        if (!formData.title || !formData.startDate || !formData.location || formData.price === '' || formData.price === null || formData.price === undefined) {
             toast.error(ERRORS.ACTIVITY_MISSING_FIELDS);
             return;
         }
@@ -107,6 +107,8 @@ export default function ActivityForm() {
                                 <option value="attraction">🎢 景點門票</option>
                                 <option value="transport">🚆 交通票券 (如 JR Pass)</option>
                                 <option value="dining">🍽️ 餐飲預約</option>
+                                <option value="activity">🏃 體驗與戶外活動</option>
+                                <option value="shopping">🛍️ 購物與商圈採買</option>
                                 <option value="voucher">🎫 其他票卷與活動</option>
                             </select>
                         </div>

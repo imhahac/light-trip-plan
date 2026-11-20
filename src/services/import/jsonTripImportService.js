@@ -342,7 +342,76 @@ export function parseUnifiedJsonInput(rawText, options = {}) {
         };
     }
 
+    const hasTicketsKey = Array.isArray(data.tickets);
+    const hasHotelsKey = Array.isArray(data.hotels);
+    const hasActivitiesKey = Array.isArray(data.activities);
+    const hasLabelsKey = data.tripLabels && typeof data.tripLabels === 'object' && !Array.isArray(data.tripLabels);
+    const hasBudgetsKey = data.tripBudgets && typeof data.tripBudgets === 'object' && !Array.isArray(data.tripBudgets);
+    const hasOverridesKey = data.tripOverrides && typeof data.tripOverrides === 'object' && !Array.isArray(data.tripOverrides);
+
+    const tickets = hasTicketsKey ? data.tickets.map(normalizeTicket).filter(Boolean) : null;
+    const hotels = hasHotelsKey ? data.hotels.map(normalizeHotel).filter(Boolean) : null;
+    const activities = hasActivitiesKey ? data.activities.map(normalizeActivity).filter(Boolean) : null;
+    const tripLabels = hasLabelsKey ? data.tripLabels : null;
+    const tripBudgets = hasBudgetsKey ? data.tripBudgets : null;
+    const tripOverrides = hasOverridesKey ? data.tripOverrides : null;
+
     const activeStartDate = options.activeTrip?.startDate || '';
+
+    // 若 JSON 未明確提供頂層 trip 物件，自動從 tripLabels / tripBudgets / tickets / hotels / activities 推導旅程 메타資訊
+    const inferredTripMeta = (() => {
+        if (data.trip && typeof data.trip === 'object') return null;
+
+        const allDates = [];
+        (tickets || []).forEach((t) => {
+            if (t.outboundDate) allDates.push(t.outboundDate);
+            if (t.outboundArrivalDate) allDates.push(t.outboundArrivalDate);
+            if (t.inboundDate) allDates.push(t.inboundDate);
+            if (t.inboundArrivalDate) allDates.push(t.inboundArrivalDate);
+        });
+        (hotels || []).forEach((h) => {
+            if (h.checkIn) allDates.push(h.checkIn);
+            if (h.checkOut) allDates.push(h.checkOut);
+        });
+        (activities || []).forEach((a) => {
+            if (a.startDate) allDates.push(a.startDate);
+            if (a.endDate) allDates.push(a.endDate);
+        });
+        const validDates = allDates.filter(Boolean).sort();
+
+        const labelValues = tripLabels
+            ? Object.values(tripLabels).map((v) => String(v || '').trim()).filter(Boolean)
+            : [];
+        const budgetValues = tripBudgets
+            ? Object.values(tripBudgets).map((v) => Number(v) || 0).filter((v) => v > 0)
+            : [];
+
+        if (validDates.length === 0 && labelValues.length === 0 && budgetValues.length === 0) {
+            return null;
+        }
+
+        let fallbackTitle = labelValues[0] || '';
+        if (!fallbackTitle && tickets && tickets.length > 0) {
+            const firstT = tickets[0];
+            const fromCode = (firstT.departRegion || '').split(' ')[0];
+            const toCode = (firstT.returnRegion || '').split(' ')[0];
+            if (fromCode && toCode) {
+                fallbackTitle = `${fromCode} → ${toCode} 旅程`;
+            }
+        }
+
+        return {
+            title: fallbackTitle,
+            startDate: validDates[0] || activeStartDate,
+            endDate: validDates[validDates.length - 1] || validDates[0] || options.activeTrip?.endDate || activeStartDate,
+            baseCurrency: options.activeTrip?.baseCurrency || 'TWD',
+            budget: budgetValues[0] || 0,
+            destination: options.activeTrip?.destination || '',
+            status: 'planning',
+            isInferred: true,
+        };
+    })();
+
     const tripMeta = data.trip && typeof data.trip === 'object'
         ? {
             title: String(data.trip.title || '').trim(),
@@ -353,7 +422,7 @@ export function parseUnifiedJsonInput(rawText, options = {}) {
             destination: data.trip.destination || '',
             status: data.trip.status || 'planning',
         }
-        : null;
+        : inferredTripMeta;
 
     const baseStartDate = tripMeta?.startDate || activeStartDate;
     const baseCurrency = tripMeta?.baseCurrency || options.activeTrip?.baseCurrency || 'TWD';
@@ -405,6 +474,37 @@ export function parseUnifiedJsonInput(rawText, options = {}) {
         });
     }
 
+    // 若 JSON 未帶入任何顯式景點 (places.length === 0)，但有帶入含日期的 activities，自動將 activities 同步轉為每日排程景點 (places)
+    if (places.length === 0 && Array.isArray(activities) && activities.length > 0 && baseStartDate) {
+        const sortedActs = [...activities].sort((a, b) =>
+            (a.startDate || '').localeCompare(b.startDate || '') ||
+            (a.time || '').localeCompare(b.time || '')
+        );
+        sortedActs.forEach((act, idx) => {
+            if (!act.startDate) return;
+            const dayIndex = resolveDayIndex({ date: act.startDate }, baseStartDate, 0);
+            const orderIdx = nextOrderForDay(dayIndex);
+            const normalized = normalizePlace(
+                {
+                    id: `place_${act.id}`,
+                    activityId: act.id,
+                    name: act.title,
+                    lat: act.lat,
+                    lng: act.lng,
+                    address: act.location,
+                    notes: act.notes,
+                    time: act.time,
+                    category: act.category,
+                    orderIndex: orderIdx,
+                },
+                dayIndex,
+                orderIdx,
+                idx
+            );
+            if (normalized) places.push(normalized);
+        });
+    }
+
     const dayPlans = Array.from(dayPlansMap.values()).sort((a, b) => a.dayIndex - b.dayIndex);
 
     const reservations = Array.isArray(data.reservations)
@@ -419,20 +519,6 @@ export function parseUnifiedJsonInput(rawText, options = {}) {
     const todos = Array.isArray(data.todos)
         ? data.todos.map(normalizeTodo).filter(Boolean)
         : [];
-
-    const hasTicketsKey = Array.isArray(data.tickets);
-    const hasHotelsKey = Array.isArray(data.hotels);
-    const hasActivitiesKey = Array.isArray(data.activities);
-    const hasLabelsKey = data.tripLabels && typeof data.tripLabels === 'object' && !Array.isArray(data.tripLabels);
-    const hasBudgetsKey = data.tripBudgets && typeof data.tripBudgets === 'object' && !Array.isArray(data.tripBudgets);
-    const hasOverridesKey = data.tripOverrides && typeof data.tripOverrides === 'object' && !Array.isArray(data.tripOverrides);
-
-    const tickets = hasTicketsKey ? data.tickets.map(normalizeTicket).filter(Boolean) : null;
-    const hotels = hasHotelsKey ? data.hotels.map(normalizeHotel).filter(Boolean) : null;
-    const activities = hasActivitiesKey ? data.activities.map(normalizeActivity).filter(Boolean) : null;
-    const tripLabels = hasLabelsKey ? data.tripLabels : null;
-    const tripBudgets = hasBudgetsKey ? data.tripBudgets : null;
-    const tripOverrides = hasOverridesKey ? data.tripOverrides : null;
 
     const hasTripMeta = Boolean(tripMeta && (tripMeta.title || tripMeta.startDate || tripMeta.endDate));
     const hasTripScopedData = Boolean(
@@ -558,10 +644,11 @@ export async function executeUnifiedJsonImport({
             };
             await repos.tripRepo.save(newTrip);
             targetTripId = newId;
-        } else if (normalized.trip && mode === 'replace') {
+        } else if (normalized.trip && activeTrip) {
+            const shouldUpdateTitle = mode === 'replace' || !normalized.trip.isInferred || !activeTrip.title || activeTrip.title === '新旅程';
             await repos.tripRepo.save({
                 ...activeTrip,
-                ...(normalized.trip.title ? { title: normalized.trip.title } : {}),
+                ...(shouldUpdateTitle && normalized.trip.title ? { title: normalized.trip.title } : {}),
                 ...(normalized.trip.startDate ? { startDate: normalized.trip.startDate } : {}),
                 ...(normalized.trip.endDate ? { endDate: normalized.trip.endDate } : {}),
                 ...(normalized.trip.baseCurrency ? { baseCurrency: normalized.trip.baseCurrency } : {}),
@@ -609,11 +696,12 @@ export async function executeUnifiedJsonImport({
             await repos.dayPlanRepo.saveBatch(plansToSave);
         }
 
-        // 3. 寫入 PlaceItems（合併模式自動接續各日 orderIndex）
+        // 3. 寫入 PlaceItems（合併模式自動接續各日 orderIndex，若 ID 已存在則原地更新避免重複偏移）
         if (normalized.places.length > 0) {
             const existingPlaces = mode === 'merge'
                 ? await repos.placeItemRepo.getByTrip(targetTripId).catch(() => [])
                 : [];
+            const existingPlaceMap = new Map(existingPlaces.map((p) => [p.id, p]));
             const dayOffsetMap = new Map();
             existingPlaces.forEach((p) => {
                 const d = p.dayIndex ?? 0;
@@ -621,12 +709,13 @@ export async function executeUnifiedJsonImport({
             });
 
             const placesToSave = normalized.places.map((p, idx) => {
-                const offset = mode === 'merge' ? (dayOffsetMap.get(p.dayIndex) || 0) : 0;
+                const existing = tripTarget !== 'new' ? existingPlaceMap.get(p.id) : null;
+                const offset = (mode === 'merge' && !existing) ? (dayOffsetMap.get(p.dayIndex) || 0) : 0;
                 return {
                     ...p,
                     id: tripTarget === 'new' ? makeId('place', idx) : p.id,
                     tripId: targetTripId,
-                    orderIndex: offset + p.orderIndex,
+                    orderIndex: existing ? existing.orderIndex : (offset + p.orderIndex),
                 };
             });
             await repos.placeItemRepo.saveBatch(placesToSave);

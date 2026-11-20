@@ -16,7 +16,9 @@ const categoryIcon = {
     attraction: '🎢',
     transport: '🚆',
     dining: '🍽️',
-    voucher: '🎫'
+    voucher: '🎫',
+    activity: '🏃',
+    shopping: '🛍️',
 };
 
 
