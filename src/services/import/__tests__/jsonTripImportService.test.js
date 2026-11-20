@@ -278,7 +278,7 @@ describe('jsonTripImportService - 一次性 JSON 匯入／匯出', () => {
 
         const savedPlaces = await placeItemRepo.getByTrip(targetTripId);
         expect(savedPlaces).toHaveLength(2);
-        expect(savedPlaces.find(p => p.id === 'place_act-2026-1223-01')?.dayIndex).toBe(0);
-        expect(savedPlaces.find(p => p.id === 'place_act-2027-0103-01')?.dayIndex).toBe(11);
+        expect(savedPlaces.find(p => p.activityId === 'act-2026-1223-01')?.dayIndex).toBe(0);
+        expect(savedPlaces.find(p => p.activityId === 'act-2027-0103-01')?.dayIndex).toBe(11);
     });
 });
