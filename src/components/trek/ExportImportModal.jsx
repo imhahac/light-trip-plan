@@ -1,69 +1,102 @@
 /**
  * ExportImportModal.jsx
  * 外部資料匯入匯出、旅程日期平移與手冊中心：
- * 1. 景點匯入：GPX / KML / KMZ 檔案與 Google Maps / Naver Maps 連結解析
- * 2. 行事曆與航跡匯出：RFC 5545 .ics 與 GPX 1.1 .gpx 下載
- * 3. 旅程日期平移 (Move Trip Dates)：一鍵調整出發日期，級聯平移所有日程與預訂
- * 4. 專業旅遊手冊：A4 向量列印與 PDF 匯出
+ * 1. JSON 整包匯入：一次匯入整趟旅程（多日景點、機票、住宿、活動、預訂、費用、行李、待辦）或舊版備份 JSON
+ * 2. 景點匯入：GPX / KML / KMZ 檔案與 Google Maps / Naver Maps 連結解析
+ * 3. 資料匯出：完整 JSON 備份、RFC 5545 .ics、GPX 1.1 .gpx 與除錯診斷包
+ * 4. 旅程日期平移 (Move Trip Dates)：一鍵調整出發日期，級聯平移所有日程與預訂
+ * 5. 專業旅遊手冊：A4 向量列印與 PDF 匯出
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { 
-    X, 
-    Upload, 
-    Download, 
-    Calendar, 
-    BookOpen, 
-    FileText, 
-    MapPin, 
-    Check, 
-    ArrowRight, 
-    Loader2, 
+import {
+    X,
+    Upload,
+    Download,
+    Calendar,
+    BookOpen,
+    Check,
+    ArrowRight,
+    Loader2,
     Share2,
     Compass,
-    Bug
+    Bug,
+    FileJson,
+    Copy,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTrek } from '../../contexts/TrekContext';
 import { parseGeoFile, parseMapLinks } from '../../services/import/geoImportService';
+import {
+    parseUnifiedJsonInput,
+    executeUnifiedJsonImport,
+    buildFullJsonExport,
+    getJsonImportTemplate,
+} from '../../services/import/jsonTripImportService';
 import { generateTripIcs, downloadIcsFile } from '../../services/export/icsExportService';
 import { generateTripGpx, downloadGpxFile } from '../../services/export/gpxExportService';
 import { shiftTripDates, calculateDayDifference } from '../../services/trips/tripShiftService';
-import { placeItemRepo, dayPlanRepo, packingRepo, expenseRepo, todoRepo } from '../../services/db';
+import { placeItemRepo, packingRepo, expenseRepo, todoRepo } from '../../services/db';
 import { downloadDiagnosticDump } from '../../utils/diagnosticDump';
-import { 
-    useTicketDataContext, 
-    useHotelDataContext, 
-    useActivityDataContext 
+import {
+    useTicketDataContext,
+    useHotelDataContext,
+    useActivityDataContext,
+    useOverrideDataContext,
 } from '../../contexts/DataContext';
 import { getUnifiedReservations } from '../../services/reservations/unifiedReservationService';
 import { assembleTripDays } from '../../services/trips/tripExportAssembler';
 import TripBrochureModal from './TripBrochureModal';
 
+function triggerJsonDownload(filename, payload) {
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    Object.assign(document.createElement('a'), {
+        href: url,
+        download: filename,
+    }).click();
+    URL.revokeObjectURL(url);
+}
+
 export default function ExportImportModal({ isOpen, onClose }) {
     const { activeTrip, dayPlans, reservations, refreshTrips } = useTrek();
 
-    // 整合機票與飯店憑證資料
+    // 整合機票、飯店、活動與覆寫資料
     const ticketContext = useTicketDataContext?.() || {};
     const hotelContext = useHotelDataContext?.() || {};
     const activityContext = useActivityDataContext?.() || {};
+    const overrideContext = useOverrideDataContext?.() || {};
+
     const tickets = ticketContext.tickets || [];
+    const tripLabels = ticketContext.tripLabels || {};
+    const tripBudgets = ticketContext.tripBudgets || {};
     const rawHotels = hotelContext.rawHotels || [];
     const activities = activityContext.activities || [];
+    const tripOverrides = overrideContext.tripOverrides || {};
 
     const unifiedReservations = React.useMemo(() => {
+        if (!activeTrip) return [];
         return getUnifiedReservations(activeTrip, reservations, tickets, rawHotels, activities);
     }, [activeTrip, reservations, tickets, rawHotels, activities]);
 
-    const [activeTab, setActiveTab] = useState('import'); // 'import' | 'export' | 'shift' | 'brochure'
+    const [activeTab, setActiveTab] = useState('json_import'); // 'json_import' | 'import' | 'export' | 'shift' | 'brochure'
     const [isBrochureOpen, setIsBrochureOpen] = useState(false);
     const [tripPlaces, setTripPlaces] = useState([]);
 
     // 計算可用天數清單 (確保無 dayPlan 紀錄時仍能精準選取 Day 1 ~ Day N)
     const tripDays = React.useMemo(() => {
+        if (!activeTrip) return [];
         return assembleTripDays({ trip: activeTrip, dayPlans, places: [] });
     }, [activeTrip, dayPlans]);
+
+    // ── JSON 一次性匯入狀態 ─────────────────────────────────────────────────
+    const [jsonText, setJsonText] = useState('');
+    const [parsedJson, setParsedJson] = useState(null);
+    const [jsonError, setJsonError] = useState('');
+    const [importMode, setImportMode] = useState('merge'); // 'merge' | 'replace'
+    const [tripTarget, setTripTarget] = useState('current'); // 'current' | 'new'
+    const [isImportingJson, setIsImportingJson] = useState(false);
 
     // ── 景點匯入狀態 ────────────────────────────────────────────────────────
     const [pastedLinks, setPastedLinks] = useState('');
@@ -80,7 +113,144 @@ export default function ExportImportModal({ isOpen, onClose }) {
     const [packingItems, setPackingItems] = useState([]);
     const [expenses, setExpenses] = useState([]);
 
-    if (!isOpen || !activeTrip) return null;
+    useEffect(() => {
+        setNewStartDate(activeTrip?.startDate || '');
+        if (!activeTrip) {
+            setTripTarget('new');
+        }
+    }, [activeTrip]);
+
+    if (!isOpen) return null;
+
+    // ── JSON 一次性匯入處理 ────────────────────────────────────────────────
+    const parseJsonSource = (rawText) => {
+        try {
+            const parsed = parseUnifiedJsonInput(rawText, { activeTrip });
+            setParsedJson(parsed);
+            setJsonError('');
+            if (!activeTrip) {
+                setTripTarget('new');
+            }
+            toast.success(`成功解析 JSON！共 ${parsed.summary.totalItems} 筆項目，確認後即可一次性匯入`);
+        } catch (err) {
+            setParsedJson(null);
+            setJsonError(err.message);
+            toast.error(`JSON 解析失敗：${err.message}`);
+        }
+    };
+
+    const handleJsonFileUpload = async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        try {
+            const text = await file.text();
+            setJsonText(text);
+            parseJsonSource(text);
+        } catch (err) {
+            setJsonError(err.message);
+            toast.error(`讀取檔案失敗：${err.message}`);
+        } finally {
+            e.target.value = '';
+        }
+    };
+
+    const handleConfirmJsonImport = async () => {
+        if (!parsedJson) return;
+        setIsImportingJson(true);
+        try {
+            const result = await executeUnifiedJsonImport({
+                parsed: parsedJson,
+                activeTrip,
+                mode: importMode,
+                tripTarget: activeTrip ? tripTarget : 'new',
+                dataSetters: {
+                    setTickets: ticketContext.setTickets,
+                    setTripLabels: ticketContext.setTripLabels,
+                    setTripBudgets: ticketContext.setTripBudgets,
+                    setHotels: hotelContext.setHotels,
+                    setActivities: activityContext.setActivities,
+                    setOverrides: overrideContext.setOverrides,
+                },
+            });
+
+            await refreshTrips(result.targetTripId || activeTrip?.id || null);
+
+            const s = result.summary;
+            const details = [
+                s.placesCount ? `${s.placesCount} 景點` : null,
+                s.ticketsCount ? `${s.ticketsCount} 機票` : null,
+                s.hotelsCount ? `${s.hotelsCount} 住宿` : null,
+                s.activitiesCount ? `${s.activitiesCount} 活動` : null,
+                s.reservationsCount ? `${s.reservationsCount} 預訂` : null,
+                s.expensesCount ? `${s.expensesCount} 費用` : null,
+                s.packingCount ? `${s.packingCount} 行李` : null,
+                s.todosCount ? `${s.todosCount} 待辦` : null,
+            ].filter(Boolean).join('、');
+
+            toast.success(`🎉 一次性匯入完成！${details ? `（${details}）` : ''}`);
+            setParsedJson(null);
+            setJsonText('');
+            setJsonError('');
+            onClose();
+        } catch (err) {
+            toast.error(`匯入失敗：${err.message}`);
+        } finally {
+            setIsImportingJson(false);
+        }
+    };
+
+    const handleCopyJsonTemplate = async () => {
+        const tpl = JSON.stringify(getJsonImportTemplate(activeTrip), null, 2);
+        try {
+            await navigator.clipboard.writeText(tpl);
+            toast.success('已複製標準 JSON 匯入範本到剪貼簿！');
+        } catch {
+            setJsonText(tpl);
+            toast.info('已將範本填入下方文字框');
+        }
+    };
+
+    const handleDownloadJsonTemplate = () => {
+        const tpl = getJsonImportTemplate(activeTrip);
+        triggerJsonDownload('trip-import-template.json', tpl);
+        toast.success('已下載 JSON 匯入範本！');
+    };
+
+    // ── 完整 JSON 備份匯出 ─────────────────────────────────────────────────
+    const handleExportFullJson = async () => {
+        try {
+            const [places, pItems, expItems, todos] = activeTrip
+                ? await Promise.all([
+                    placeItemRepo.getByTrip(activeTrip.id).catch(() => []),
+                    packingRepo.getByTrip(activeTrip.id).catch(() => []),
+                    expenseRepo.getByTrip(activeTrip.id).catch(() => []),
+                    todoRepo.getByTrip(activeTrip.id).catch(() => []),
+                ])
+                : [[], [], [], []];
+
+            const payload = buildFullJsonExport({
+                trip: activeTrip,
+                dayPlans,
+                places,
+                reservations,
+                expenses: expItems,
+                packingItems: pItems,
+                todos,
+                tickets,
+                hotels: rawHotels,
+                activities,
+                tripLabels,
+                tripBudgets,
+                tripOverrides,
+            });
+            const dateStamp = new Date().toISOString().split('T')[0];
+            const safeTitle = (activeTrip?.title || 'travel').replace(/[^\w\u4e00-\u9fa5-]+/g, '_');
+            triggerJsonDownload(`${safeTitle}_backup_${dateStamp}.json`, payload);
+            toast.success('已匯出完整旅程與票券 JSON 備份檔！');
+        } catch (err) {
+            toast.error(`匯出 JSON 失敗：${err.message}`);
+        }
+    };
 
     // 1. 處理檔案匯入 (GPX / KML / KMZ)
     const handleFileUpload = async (e) => {
@@ -123,14 +293,13 @@ export default function ExportImportModal({ isOpen, onClose }) {
 
     // 3. 確認匯入至指定日程
     const handleConfirmImport = async () => {
-        if (parsedPlaces.length === 0) return;
+        if (parsedPlaces.length === 0 || !activeTrip) return;
         setIsImporting(true);
 
         try {
             const targetDayIndex = selectedTargetDay;
-            // 查詢現有景點以排定 orderIndex
             const existingPlaces = await placeItemRepo.getByTrip(activeTrip.id).catch(() => []);
-            const dayPlacesCount = existingPlaces.filter(p => (p.dayIndex ?? 0) === targetDayIndex).length;
+            const dayPlacesCount = existingPlaces.filter((p) => (p.dayIndex ?? 0) === targetDayIndex).length;
 
             const newPlaces = parsedPlaces.map((p, idx) => ({
                 id: `place_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 6)}`,
@@ -142,10 +311,9 @@ export default function ExportImportModal({ isOpen, onClose }) {
                 address: p.address || p.desc || p.originalUrl || '',
                 notes: p.notes || `從外部匯入 (${p.source || '外部'})`,
                 orderIndex: dayPlacesCount + idx,
-                createdAt: Date.now()
+                createdAt: Date.now(),
             }));
 
-            // 儲存至 placeItemRepo
             await placeItemRepo.saveBatch(newPlaces);
 
             toast.success(`✨ 已將 ${newPlaces.length} 個景點成功匯入至 Day ${targetDayIndex + 1}！`);
@@ -162,10 +330,11 @@ export default function ExportImportModal({ isOpen, onClose }) {
 
     // 4. 匯出 ICS 行事曆
     const handleExportIcs = async () => {
+        if (!activeTrip) return;
         try {
             const [todos, places] = await Promise.all([
                 todoRepo.getByTrip(activeTrip.id).catch(() => []),
-                placeItemRepo.getByTrip(activeTrip.id).catch(() => [])
+                placeItemRepo.getByTrip(activeTrip.id).catch(() => []),
             ]);
             const assembledDays = assembleTripDays({ trip: activeTrip, dayPlans, places });
             const icsContent = generateTripIcs(activeTrip, assembledDays, unifiedReservations, todos);
@@ -179,6 +348,7 @@ export default function ExportImportModal({ isOpen, onClose }) {
 
     // 5. 匯出 GPX 航跡
     const handleExportGpx = async () => {
+        if (!activeTrip) return;
         try {
             const places = await placeItemRepo.getByTrip(activeTrip.id).catch(() => []);
             const assembledDays = assembleTripDays({ trip: activeTrip, dayPlans, places });
@@ -203,7 +373,7 @@ export default function ExportImportModal({ isOpen, onClose }) {
 
     // 6. 執行旅程日期平移
     const handleShiftDates = async () => {
-        if (!newStartDate) return;
+        if (!newStartDate || !activeTrip) return;
         const diff = calculateDayDifference(activeTrip.startDate, newStartDate);
         if (diff === 0) {
             toast.info('新出發日期與原日期相同，無需平移');
@@ -229,11 +399,12 @@ export default function ExportImportModal({ isOpen, onClose }) {
 
     // 7. 開啟手冊預覽時讀取景點、費用與行李資料
     const handleOpenBrochure = async () => {
+        if (!activeTrip) return;
         try {
             const [pItems, expItems, places] = await Promise.all([
                 packingRepo.getByTrip(activeTrip.id).catch(() => []),
                 expenseRepo.getByTrip(activeTrip.id).catch(() => []),
-                placeItemRepo.getByTrip(activeTrip.id).catch(() => [])
+                placeItemRepo.getByTrip(activeTrip.id).catch(() => []),
             ]);
             setPackingItems(pItems);
             setExpenses(expItems);
@@ -244,13 +415,34 @@ export default function ExportImportModal({ isOpen, onClose }) {
         }
     };
 
-    const dayDiff = calculateDayDifference(activeTrip.startDate, newStartDate);
+    const dayDiff = activeTrip ? calculateDayDifference(activeTrip.startDate, newStartDate) : 0;
+
+    const tabs = [
+        { key: 'json_import', label: '📦 JSON 整包匯入' },
+        ...(activeTrip ? [{ key: 'import', label: '📥 景點匯入' }] : []),
+        { key: 'export', label: '📤 資料匯出' },
+        ...(activeTrip ? [{ key: 'shift', label: '🗓️ 日期平移' }] : []),
+        ...(activeTrip ? [{ key: 'brochure', label: '📖 旅遊手冊' }] : []),
+    ];
+
+    const summaryBadges = parsedJson
+        ? [
+            { label: '日程天數', value: parsedJson.summary.daysCount },
+            { label: '景點地標', value: parsedJson.summary.placesCount },
+            { label: '機票訂單', value: parsedJson.summary.ticketsCount },
+            { label: '飯店住宿', value: parsedJson.summary.hotelsCount },
+            { label: '票券活動', value: parsedJson.summary.activitiesCount },
+            { label: '其他預訂', value: parsedJson.summary.reservationsCount },
+            { label: '日常支出', value: parsedJson.summary.expensesCount },
+            { label: '行李項目', value: parsedJson.summary.packingCount },
+            { label: '行前待辦', value: parsedJson.summary.todosCount },
+        ].filter((b) => b.value > 0)
+        : [];
 
     const modalContent = (
         <>
             <div className="fixed inset-0 z-[70] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
                 <div className="bg-white rounded-3xl shadow-2xl max-w-2xl w-full overflow-hidden border border-gray-100 flex flex-col max-h-[90vh]">
-                    
                     {/* Header */}
                     <div className="p-4 sm:p-5 bg-slate-900 text-white flex items-center justify-between">
                         <div className="flex items-center gap-2.5">
@@ -259,7 +451,9 @@ export default function ExportImportModal({ isOpen, onClose }) {
                             </div>
                             <div>
                                 <h3 className="text-sm font-bold">匯入匯出與工具中心</h3>
-                                <p className="text-[11px] text-slate-400 font-medium">{activeTrip.title}</p>
+                                <p className="text-[11px] text-slate-400 font-medium">
+                                    {activeTrip ? activeTrip.title : '尚未選擇旅程（可直接匯入建立新旅程）'}
+                                </p>
                             </div>
                         </div>
                         <button onClick={onClose} className="p-1.5 text-slate-400 hover:text-white rounded-lg transition">
@@ -269,16 +463,11 @@ export default function ExportImportModal({ isOpen, onClose }) {
 
                     {/* Navigation Tabs */}
                     <div className="flex items-center border-b border-gray-200 bg-slate-50 px-4 pt-2 gap-1 overflow-x-auto scrollbar-none">
-                        {[
-                            { key: 'import', label: '📥 景點匯入', desc: 'GPX/KML/地圖' },
-                            { key: 'export', label: '📤 資料匯出', desc: 'ICS/GPX' },
-                            { key: 'shift', label: '🗓️ 日期平移', desc: '變更出發日' },
-                            { key: 'brochure', label: '📖 旅遊手冊', desc: 'A4 列印/PDF' }
-                        ].map(tab => (
+                        {tabs.map((tab) => (
                             <button
                                 key={tab.key}
                                 onClick={() => setActiveTab(tab.key)}
-                                className={`px-4 py-2.5 text-xs font-bold rounded-t-xl transition-all border-b-2 whitespace-nowrap ${
+                                className={`px-3.5 py-2.5 text-xs font-bold rounded-t-xl transition-all border-b-2 whitespace-nowrap ${
                                     activeTab === tab.key
                                         ? 'bg-white border-indigo-600 text-indigo-700 shadow-sm'
                                         : 'border-transparent text-slate-500 hover:text-slate-800'
@@ -291,9 +480,144 @@ export default function ExportImportModal({ isOpen, onClose }) {
 
                     {/* Tab Content */}
                     <div className="p-5 overflow-y-auto space-y-4 flex-1">
-                        
+                        {/* ── Tab 0: JSON 一次性整包匯入 ───────────────────────────── */}
+                        {activeTab === 'json_import' && (
+                            <div className="space-y-4">
+                                <div className="flex flex-wrap items-center justify-between gap-2 bg-indigo-50/70 border border-indigo-100 rounded-2xl p-3">
+                                    <p className="text-[11px] text-indigo-900 leading-relaxed flex-1">
+                                        支援一次匯入完整多日行程（<code className="font-mono font-bold">trip / days / places / reservations / expenses / packingItems / todos</code>）及機票住宿活動（<code className="font-mono font-bold">tickets / hotels / activities</code>）。
+                                    </p>
+                                    <div className="flex items-center gap-1.5 shrink-0">
+                                        <button
+                                            type="button"
+                                            onClick={handleCopyJsonTemplate}
+                                            className="px-2.5 py-1.5 bg-white hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-[11px] font-bold flex items-center gap-1 transition"
+                                        >
+                                            <Copy className="w-3 h-3" />
+                                            <span>複製範本</span>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={handleDownloadJsonTemplate}
+                                            className="px-2.5 py-1.5 bg-white hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-[11px] font-bold flex items-center gap-1 transition"
+                                        >
+                                            <Download className="w-3 h-3" />
+                                            <span>下載範本</span>
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    {/* 上傳 JSON 檔 */}
+                                    <div className="border-2 border-dashed border-indigo-200 hover:border-indigo-400 bg-indigo-50/40 rounded-2xl p-4 text-center relative cursor-pointer transition flex flex-col items-center justify-center min-h-[124px]">
+                                        <input
+                                            type="file"
+                                            accept=".json,application/json"
+                                            onChange={handleJsonFileUpload}
+                                            className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                                        />
+                                        <FileJson className="w-6 h-6 text-indigo-600 mb-1.5" />
+                                        <p className="text-xs font-bold text-slate-800">上傳 .json 檔案</p>
+                                        <p className="text-[10px] text-slate-500 mt-0.5">支援完整行程包與 reverse-tickets.json</p>
+                                    </div>
+
+                                    {/* 直接貼上 JSON */}
+                                    <div className="flex flex-col gap-2">
+                                        <textarea
+                                            rows={4}
+                                            value={jsonText}
+                                            onChange={(e) => setJsonText(e.target.value)}
+                                            placeholder='直接貼上 JSON 內容（支援 ```json 區塊）'
+                                            className="w-full border border-gray-200 rounded-xl p-2.5 text-[11px] focus:outline-none focus:border-indigo-500 resize-none font-mono"
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={() => parseJsonSource(jsonText)}
+                                            disabled={!jsonText.trim()}
+                                            className="w-full py-2 bg-indigo-50 hover:bg-indigo-100 disabled:opacity-50 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-bold transition"
+                                        >
+                                            解析並預覽 JSON 內容
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {jsonError && (
+                                    <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700 font-medium">
+                                        ⚠️ {jsonError}
+                                    </div>
+                                )}
+
+                                {parsedJson && (
+                                    <div className="border border-emerald-200 rounded-2xl p-4 space-y-3 bg-emerald-50/40">
+                                        <div className="flex items-center justify-between">
+                                            <span className="text-xs font-bold text-emerald-900">
+                                                ✅ 解析成功{parsedJson.summary.tripTitle ? `：${parsedJson.summary.tripTitle}` : ''}
+                                            </span>
+                                            <span className="text-[11px] font-mono font-bold text-emerald-700">
+                                                共 {parsedJson.summary.totalItems} 筆項目
+                                            </span>
+                                        </div>
+
+                                        {summaryBadges.length > 0 && (
+                                            <div className="flex flex-wrap gap-1.5">
+                                                {summaryBadges.map((b) => (
+                                                    <span
+                                                        key={b.label}
+                                                        className="px-2.5 py-1 rounded-lg bg-white border border-emerald-200 text-[11px] font-bold text-slate-700"
+                                                    >
+                                                        {b.label} <span className="text-indigo-600 font-mono">{b.value}</span>
+                                                    </span>
+                                                ))}
+                                            </div>
+                                        )}
+
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+                                            {parsedJson.summary.hasTripScopedData && (
+                                                <div>
+                                                    <label className="block text-[11px] font-bold text-slate-600 mb-1">目標旅程</label>
+                                                    <select
+                                                        value={activeTrip ? tripTarget : 'new'}
+                                                        onChange={(e) => setTripTarget(e.target.value)}
+                                                        disabled={!activeTrip}
+                                                        className="w-full border border-gray-300 rounded-lg px-2.5 py-1.5 text-xs bg-white font-bold text-slate-800"
+                                                    >
+                                                        {activeTrip && (
+                                                            <option value="current">匯入至目前旅程（{activeTrip.title}）</option>
+                                                        )}
+                                                        <option value="new">建立為全新旅程</option>
+                                                    </select>
+                                                </div>
+                                            )}
+
+                                            <div>
+                                                <label className="block text-[11px] font-bold text-slate-600 mb-1">寫入策略</label>
+                                                <select
+                                                    value={importMode}
+                                                    onChange={(e) => setImportMode(e.target.value)}
+                                                    className="w-full border border-gray-300 rounded-lg px-2.5 py-1.5 text-xs bg-white font-bold text-slate-800"
+                                                >
+                                                    <option value="merge">合併寫入（保留既有資料）</option>
+                                                    <option value="replace">覆寫取代（清除對應舊資料）</option>
+                                                </select>
+                                            </div>
+                                        </div>
+
+                                        <button
+                                            type="button"
+                                            onClick={handleConfirmJsonImport}
+                                            disabled={isImportingJson}
+                                            className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition"
+                                        >
+                                            {isImportingJson ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                                            <span>確認一次性匯入全部資料</span>
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
                         {/* ── Tab 1: 景點匯入 ────────────────────────────────────── */}
-                        {activeTab === 'import' && (
+                        {activeTab === 'import' && activeTrip && (
                             <div className="space-y-4">
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                     {/* 檔案上傳框 */}
@@ -388,41 +712,60 @@ export default function ExportImportModal({ isOpen, onClose }) {
                         {/* ── Tab 2: 資料匯出 ────────────────────────────────────── */}
                         {activeTab === 'export' && (
                             <div className="space-y-4">
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                    <div className="p-4 rounded-2xl border border-gray-200 bg-slate-50 space-y-2">
-                                        <div className="flex items-center gap-2 text-indigo-700 font-bold text-xs">
-                                            <Calendar className="w-4 h-4" />
-                                            <span>iCalendar (.ics) 行事曆</span>
-                                        </div>
-                                        <p className="text-[11px] text-slate-500 leading-relaxed">
-                                            包含機票航班、住宿飯店、每日景點參訪時間與行前待辦截止日，相容 Apple Calendar、Google 日曆與 Outlook。
-                                        </p>
-                                        <button
-                                            onClick={handleExportIcs}
-                                            className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5"
-                                        >
-                                            <Download className="w-4 h-4" />
-                                            <span>下載 .ics 檔案</span>
-                                        </button>
+                                <div className="p-4 rounded-2xl border border-indigo-200 bg-indigo-50/50 space-y-2">
+                                    <div className="flex items-center gap-2 text-indigo-800 font-bold text-xs">
+                                        <FileJson className="w-4 h-4 text-indigo-600" />
+                                        <span>完整旅程與票券備份 (.json)</span>
                                     </div>
-
-                                    <div className="p-4 rounded-2xl border border-gray-200 bg-slate-50 space-y-2">
-                                        <div className="flex items-center gap-2 text-emerald-700 font-bold text-xs">
-                                            <Compass className="w-4 h-4" />
-                                            <span>GPS 航跡與地標 (.gpx)</span>
-                                        </div>
-                                        <p className="text-[11px] text-slate-500 leading-relaxed">
-                                            標準 GPX 1.1 格式，匯出所有行程景點坐標點位與連續旅遊路線，可匯入 Garmin、OsmAnd、CoMaps 與 Google Earth。
-                                        </p>
-                                        <button
-                                            onClick={handleExportGpx}
-                                            className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5"
-                                        >
-                                            <Download className="w-4 h-4" />
-                                            <span>下載 .gpx 檔案</span>
-                                        </button>
-                                    </div>
+                                    <p className="text-[11px] text-indigo-900/80 leading-relaxed">
+                                        匯出當前旅程全部日程、景點、預訂、費用、行李與待辦，以及全域機票、住宿、活動資料。此檔案可直接於「JSON 整包匯入」無損還原。
+                                    </p>
+                                    <button
+                                        onClick={handleExportFullJson}
+                                        className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 shadow-sm"
+                                    >
+                                        <Download className="w-4 h-4" />
+                                        <span>下載完整備份 (.json)</span>
+                                    </button>
                                 </div>
+
+                                {activeTrip && (
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                        <div className="p-4 rounded-2xl border border-gray-200 bg-slate-50 space-y-2">
+                                            <div className="flex items-center gap-2 text-indigo-700 font-bold text-xs">
+                                                <Calendar className="w-4 h-4" />
+                                                <span>iCalendar (.ics) 行事曆</span>
+                                            </div>
+                                            <p className="text-[11px] text-slate-500 leading-relaxed">
+                                                包含機票航班、住宿飯店、每日景點參訪時間與行前待辦截止日，相容 Apple Calendar、Google 日曆與 Outlook。
+                                            </p>
+                                            <button
+                                                onClick={handleExportIcs}
+                                                className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5"
+                                            >
+                                                <Download className="w-4 h-4" />
+                                                <span>下載 .ics 檔案</span>
+                                            </button>
+                                        </div>
+
+                                        <div className="p-4 rounded-2xl border border-gray-200 bg-slate-50 space-y-2">
+                                            <div className="flex items-center gap-2 text-emerald-700 font-bold text-xs">
+                                                <Compass className="w-4 h-4" />
+                                                <span>GPS 航跡與地標 (.gpx)</span>
+                                            </div>
+                                            <p className="text-[11px] text-slate-500 leading-relaxed">
+                                                標準 GPX 1.1 格式，匯出所有行程景點坐標點位與連續旅遊路線，可匯入 Garmin、OsmAnd、CoMaps 與 Google Earth。
+                                            </p>
+                                            <button
+                                                onClick={handleExportGpx}
+                                                className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5"
+                                            >
+                                                <Download className="w-4 h-4" />
+                                                <span>下載 .gpx 檔案</span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
 
                                 <div className="p-4 rounded-2xl border border-amber-200 bg-amber-50/50 space-y-2">
                                     <div className="flex items-center gap-2 text-amber-800 font-bold text-xs">
@@ -444,7 +787,7 @@ export default function ExportImportModal({ isOpen, onClose }) {
                         )}
 
                         {/* ── Tab 3: 日期平移 ────────────────────────────────────── */}
-                        {activeTab === 'shift' && (
+                        {activeTab === 'shift' && activeTrip && (
                             <div className="space-y-4">
                                 <div className="p-4 rounded-2xl bg-indigo-50/50 border border-indigo-100 space-y-3">
                                     <div className="text-xs text-indigo-900 font-bold flex items-center gap-1.5">
@@ -502,7 +845,7 @@ export default function ExportImportModal({ isOpen, onClose }) {
                         )}
 
                         {/* ── Tab 4: 專業手冊 ────────────────────────────────────── */}
-                        {activeTab === 'brochure' && (
+                        {activeTab === 'brochure' && activeTrip && (
                             <div className="space-y-4 text-center py-4">
                                 <div className="w-14 h-14 rounded-2xl bg-indigo-50 text-indigo-600 mx-auto flex items-center justify-center mb-2 shadow-inner">
                                     <BookOpen className="w-7 h-7" />
@@ -525,16 +868,18 @@ export default function ExportImportModal({ isOpen, onClose }) {
             </div>
 
             {/* 旅遊手冊 Modal */}
-            <TripBrochureModal
-                isOpen={isBrochureOpen}
-                onClose={() => setIsBrochureOpen(false)}
-                trip={activeTrip}
-                dayPlans={dayPlans}
-                places={tripPlaces}
-                reservations={unifiedReservations}
-                packingItems={packingItems}
-                expenses={expenses}
-            />
+            {activeTrip && (
+                <TripBrochureModal
+                    isOpen={isBrochureOpen}
+                    onClose={() => setIsBrochureOpen(false)}
+                    trip={activeTrip}
+                    dayPlans={dayPlans}
+                    places={tripPlaces}
+                    reservations={unifiedReservations}
+                    packingItems={packingItems}
+                    expenses={expenses}
+                />
+            )}
         </>
     );
 

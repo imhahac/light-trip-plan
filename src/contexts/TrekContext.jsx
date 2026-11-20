@@ -23,6 +23,7 @@ export function TrekProvider({ children }) {
     const [activeTrip, setActiveTrip] = useState(null);
     const [reservations, setReservations] = useState([]);
     const [dayPlans, setDayPlans] = useState([]);
+    const [dataVersion, setDataVersion] = useState(0);
     const [isLoading, setIsLoading] = useState(true);
     const [storedViewMode, setStoredViewMode] = useLocalStorage(STORAGE_KEYS.TREK_VIEW_MODE, 'split'); // 'split' | 'planner-only' | 'map-only'
     const [sharedTripData, setSharedTripData] = useState(null);
@@ -75,6 +76,7 @@ export function TrekProvider({ children }) {
                 setReservations([]);
                 setDayPlans([]);
             }
+            setDataVersion((v) => v + 1);
         } catch (err) {
             logger.error('Failed to load trips from IndexedDB:', err);
         } finally {
@@ -265,6 +267,7 @@ export function TrekProvider({ children }) {
         activeTrip,
         reservations,
         dayPlans,
+        dataVersion,
         isLoading,
         viewMode,
         setViewMode,

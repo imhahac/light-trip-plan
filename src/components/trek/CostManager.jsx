@@ -82,7 +82,7 @@ const CustomTooltip = ({ active, payload }) => {
 };
 
 export default function CostManager() {
-    const { activeTrip, trips = [], reservations = [] } = useTrek();
+    const { activeTrip, trips = [], reservations = [], dataVersion = 0 } = useTrek();
     const { activeTab } = useUIContext();
     const {
         safeTickets = [],
@@ -148,7 +148,7 @@ export default function CostManager() {
 
     useEffect(() => {
         loadCustomExpenses();
-    }, [loadCustomExpenses]);
+    }, [loadCustomExpenses, dataVersion]);
 
     // 2. 當幣別變動時，即時獲取預估匯率 (統一採用 exchangerate-api)
     useEffect(() => {

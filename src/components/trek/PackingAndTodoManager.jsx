@@ -38,7 +38,7 @@ import { STORAGE_KEYS } from '../../constants/storageKeys';
 import { useLocalStorage } from '../../hooks/useLocalStorage';
 
 export default function PackingAndTodoManager() {
-    const { activeTrip, trips = [] } = useTrek();
+    const { activeTrip, trips = [], dataVersion = 0 } = useTrek();
     const { accessToken } = useSyncContext();
 
     // 範圍模式：'trip' (預設：僅當前選定行程) | 'all' (全域：所有行程整合總匯)
@@ -103,7 +103,7 @@ export default function PackingAndTodoManager() {
 
     useEffect(() => {
         loadAllData();
-    }, [loadAllData]);
+    }, [loadAllData, dataVersion]);
 
     if (!activeTrip && scope === 'trip') return null;
 

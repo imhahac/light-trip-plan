@@ -46,7 +46,7 @@ import { useLocalStorage } from '../../hooks/useLocalStorage';
 import { logger } from '../../utils/logger';
 
 export default function DayPlanTimeline({ onSelectDayPlaces, onRouteCalculated, unifiedReservations = null }) {
-    const { activeTrip, reservations = [], dayPlans, refreshTrips } = useTrek();
+    const { activeTrip, reservations = [], dayPlans, dataVersion = 0, refreshTrips } = useTrek();
     const activeReservations = unifiedReservations || reservations;
     const [selectedDayByTrip, setSelectedDayByTrip] = useLocalStorage(STORAGE_KEYS.PLANNER_SELECTED_DAY_BY_TRIP, {});
     const [dayPlacesMap, setDayPlacesMap] = useState({}); // { [dayIndex]: places[] }
@@ -207,7 +207,7 @@ export default function DayPlanTimeline({ onSelectDayPlaces, onRouteCalculated, 
             setDayPlacesMap(mapping);
         }
         loadPlaces();
-    }, [activeTrip?.id]);
+    }, [activeTrip?.id, dataVersion]);
 
     // 3. 當選中特定天時，將該天景點傳遞給父層地圖視窗
     useEffect(() => {

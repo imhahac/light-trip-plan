@@ -371,16 +371,14 @@ export default function TrekHeader() {
                 {/* 3. Right Toolbar: Context-Aware Layout Toggles & Google Auth Hub */}
                 <div className="flex items-center gap-2">
                     {/* 匯入匯出與手冊按鈕 */}
-                    {activeTrip && (
-                        <button
-                            onClick={() => setIsExportModalOpen(true)}
-                            title="匯入景點、行事曆/航跡匯出、日期平移與手冊"
-                            className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-xs font-bold text-white transition shadow-sm"
-                        >
-                            <Share2 className="w-3.5 h-3.5" />
-                            <span className="hidden sm:inline">匯入匯出 & 手冊</span>
-                        </button>
-                    )}
+                    <button
+                        onClick={() => setIsExportModalOpen(true)}
+                        title="JSON 整包匯入、景點匯入、行事曆/航跡匯出、日期平移與手冊"
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-xs font-bold text-white transition shadow-sm"
+                    >
+                        <Share2 className="w-3.5 h-3.5" />
+                        <span className="hidden sm:inline">匯入匯出 & 手冊</span>
+                    </button>
 
                     {/* Google 帳號與雲端同步中心 (未設定 Client ID 或唯讀分享模式時自動隱藏) */}
                     {(Boolean(CONFIG.googleClientId) || Boolean(accessToken)) && !isSharedView && (
