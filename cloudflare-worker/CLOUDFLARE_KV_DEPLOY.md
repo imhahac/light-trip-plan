@@ -1,4 +1,6 @@
-# Cloudflare Worker KV 唯讀分享功能 — 佈署手冊
+# Cloudflare Worker KV 唯讀分享與 API 同步功能 — 佈署手冊
+
+> 📖 若您已完成部署，欲查詢 `/api/v1/ingest` 認證寫入、單筆追加、整包覆寫與前端自動拉取之詳細規格與程式碼範例，請參閱 **[外部寫入與雲端自動同步 API 使用指南 (API_GUIDE.md)](./API_GUIDE.md)**。
 
 本手冊提供兩條路徑：
 - **路徑 A：GitHub 自動化部署 (推薦)** — 透過 CI/CD 自動替換 ID 並部署，適合長期維護。

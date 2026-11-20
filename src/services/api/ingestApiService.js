@@ -6,7 +6,7 @@
  * - 支援前端開頁／重新整理自動拉取最新寫入版本 (revision 比對)
  */
 
-import { STORAGE_KEYS } from '../../constants/storageKeys';
+import { STORAGE_KEYS } from '../../constants/storageKeys.js';
 
 const DEFAULT_WORKER_BASE = (
     (typeof import.meta !== 'undefined' && import.meta.env?.VITE_FLIGHT_PROXY_URL) ||
@@ -158,6 +158,81 @@ export async function pushToIngestApi({
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
         throw new Error(data.error || `API 寫入失敗 (HTTP ${res.status})`);
+    }
+    return data;
+}
+
+/**
+ * 查詢所有已簽發的子金鑰清單（需使用 Master Admin Token）
+ */
+export async function listSubKeys({
+    endpointUrl = DEFAULT_WORKER_BASE,
+    apiToken,
+}) {
+    const base = String(endpointUrl || DEFAULT_WORKER_BASE).replace(/\/+$/, '');
+    const headers = buildAuthHeaders(apiToken);
+
+    const res = await fetch(`${base}/api/v1/keys`, {
+        method: 'GET',
+        headers,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        throw new Error(data.error || `查詢子金鑰失敗 (HTTP ${res.status})`);
+    }
+    return data.keys || [];
+}
+
+/**
+ * 簽發一組新的子金鑰（需使用 Master Admin Token，明文 token 僅回傳一次）
+ */
+export async function createSubKey({
+    endpointUrl = DEFAULT_WORKER_BASE,
+    apiToken,
+    label,
+    permissions = ['read', 'write'],
+    allowedChannels = ['*'],
+    expiresInDays = 0,
+}) {
+    const base = String(endpointUrl || DEFAULT_WORKER_BASE).replace(/\/+$/, '');
+    const headers = buildAuthHeaders(apiToken);
+
+    const res = await fetch(`${base}/api/v1/keys`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+            label,
+            permissions,
+            allowedChannels,
+            expiresInDays: Number(expiresInDays) || 0,
+        }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        throw new Error(data.error || `簽發子金鑰失敗 (HTTP ${res.status})`);
+    }
+    return data.key;
+}
+
+/**
+ * 撤銷（刪除）指定子金鑰（需使用 Master Admin Token）
+ */
+export async function revokeSubKey({
+    endpointUrl = DEFAULT_WORKER_BASE,
+    apiToken,
+    keyId,
+}) {
+    const base = String(endpointUrl || DEFAULT_WORKER_BASE).replace(/\/+$/, '');
+    const headers = buildAuthHeaders(apiToken);
+    const params = new URLSearchParams({ id: String(keyId || '').trim() });
+
+    const res = await fetch(`${base}/api/v1/keys?${params.toString()}`, {
+        method: 'DELETE',
+        headers,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        throw new Error(data.error || `撤銷子金鑰失敗 (HTTP ${res.status})`);
     }
     return data;
 }

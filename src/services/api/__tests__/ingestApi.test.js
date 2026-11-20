@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import worker, { mergeIngestPayload } from '../../../../cloudflare-worker/worker';
+import worker from '../../../../cloudflare-worker/worker';
 import {
     getStoredApiSyncConfig,
     saveApiSyncConfig,
@@ -7,6 +7,9 @@ import {
     setLastSyncedRevision,
     pullFromIngestApi,
     pushToIngestApi,
+    listSubKeys,
+    createSubKey,
+    revokeSubKey,
     buildIngestCurlExamples,
 } from '../ingestApiService';
 
@@ -196,6 +199,111 @@ describe('Cloudflare Worker /api/v1/ingest 認證寫入與前端同步測試', (
             expect(pullRes.hasUpdate).toBe(true);
             expect(pullRes.data.trip.title).toBe('2026 Tokyo 聖誕跨年');
             expect(pullRes.data.hotels).toHaveLength(1);
+        } finally {
+            globalThis.fetch = originalFetch;
+        }
+    });
+
+    it('支援多組逗號分隔 Master Token 以及 /api/v1/keys 子金鑰簽發、限權 (通道/讀寫) 與立即撤銷', async () => {
+        env.API_SECRET_TOKEN = 'master-key-1, master-key-2';
+
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = vi.fn((url, init) => worker.fetch(new Request(url, init), env));
+        try {
+            // 1. 使用第二組 Master Token 簽發一組僅限 tokyo2026 通道的「讀寫」子金鑰
+            const issued = await createSubKey({
+                endpointUrl: 'https://worker.example.com',
+                apiToken: 'master-key-2',
+                label: '旅伴小明',
+                permissions: ['read', 'write'],
+                allowedChannels: ['tokyo2026'],
+                expiresInDays: 30,
+            });
+            expect(issued.id).toMatch(/^key_/);
+            expect(issued.token).toMatch(/^ltp_sk_/);
+            expect(issued.tokenMask).toContain('ltp_sk_');
+
+            // 2. 簽發另一組「唯讀」子金鑰
+            const readOnlyKey = await createSubKey({
+                endpointUrl: 'https://worker.example.com',
+                apiToken: 'master-key-1',
+                label: '唯讀檢視器',
+                permissions: ['read'],
+                allowedChannels: ['tokyo2026'],
+            });
+
+            // 3. 查詢子金鑰清單 (不應暴露明文 token 或 tokenHash)
+            const keysList = await listSubKeys({
+                endpointUrl: 'https://worker.example.com',
+                apiToken: 'master-key-1',
+            });
+            expect(keysList).toHaveLength(2);
+            expect(keysList[0].token).toBeUndefined();
+            expect(keysList[0].tokenHash).toBeUndefined();
+
+            // 4. 子金鑰本身不可呼叫 /api/v1/keys 管理其他金鑰 (應回傳 403)
+            await expect(
+                listSubKeys({
+                    endpointUrl: 'https://worker.example.com',
+                    apiToken: issued.token,
+                })
+            ).rejects.toThrow(/403|僅限 Master/);
+
+            // 5. 使用「旅伴小明」子金鑰寫入授權的 tokyo2026 通道 -> 成功
+            const writeOk = await pushToIngestApi({
+                endpointUrl: 'https://worker.example.com',
+                apiToken: issued.token,
+                channel: 'tokyo2026',
+                mode: 'merge',
+                payload: {
+                    activity: { id: 'act-sub-1', title: '晴空塔夜景', startDate: '2026-12-24' },
+                },
+            });
+            expect(writeOk.success).toBe(true);
+
+            // 6. 使用「旅伴小明」子金鑰嘗試寫入未授權的 osaka2026 通道 -> 403 Forbidden
+            await expect(
+                pushToIngestApi({
+                    endpointUrl: 'https://worker.example.com',
+                    apiToken: issued.token,
+                    channel: 'osaka2026',
+                    mode: 'merge',
+                    payload: { activity: { id: 'act-x', title: '道頓堀' } },
+                })
+            ).rejects.toThrow(/403|未獲授權存取通道/);
+
+            // 7. 使用「唯讀」子金鑰讀取 tokyo2026 -> 成功；嘗試寫入 -> 403 Forbidden
+            const readOk = await pullFromIngestApi({
+                endpointUrl: 'https://worker.example.com',
+                apiToken: readOnlyKey.token,
+                channel: 'tokyo2026',
+            });
+            expect(readOk.data.activities).toHaveLength(1);
+
+            await expect(
+                pushToIngestApi({
+                    endpointUrl: 'https://worker.example.com',
+                    apiToken: readOnlyKey.token,
+                    channel: 'tokyo2026',
+                    payload: { activity: { id: 'act-fail', title: 'Fail' } },
+                })
+            ).rejects.toThrow(/403|缺少 "write" 權限/);
+
+            // 8. Master Token 撤銷「旅伴小明」子金鑰後，該子金鑰立即失效 (401)
+            const revRes = await revokeSubKey({
+                endpointUrl: 'https://worker.example.com',
+                apiToken: 'master-key-1',
+                keyId: issued.id,
+            });
+            expect(revRes.revokedId).toBe(issued.id);
+
+            await expect(
+                pullFromIngestApi({
+                    endpointUrl: 'https://worker.example.com',
+                    apiToken: issued.token,
+                    channel: 'tokyo2026',
+                })
+            ).rejects.toThrow(/401|無效或已撤銷/);
         } finally {
             globalThis.fetch = originalFetch;
         }

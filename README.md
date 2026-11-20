@@ -136,9 +136,11 @@ npm test
 
 ---
 
-## 📖 部署文件
-詳細之 Cloudflare Worker、GitHub Pages、Google OAuth 憑證與 PWA 配置說明，請參閱：
-👉 **[完整生產環境部署指南 (deployment.md)](./deployment.md)**
+## 📖 部署與 API 使用文件
+詳細之 Cloudflare Worker、GitHub Pages、Google OAuth 憑證、PWA 配置與外部寫入 API 說明，請參閱：
+* 👉 **[完整生產環境部署指南 (deployment.md)](./deployment.md)**
+* 👉 **[外部寫入與雲端自動同步 API 使用指南 (cloudflare-worker/API_GUIDE.md)](./cloudflare-worker/API_GUIDE.md)**
+* 👉 **[Cloudflare Worker KV 部署手冊 (cloudflare-worker/CLOUDFLARE_KV_DEPLOY.md)](./cloudflare-worker/CLOUDFLARE_KV_DEPLOY.md)**
 
 ---
 

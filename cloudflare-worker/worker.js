@@ -31,6 +31,7 @@ function uuid() {
 
 const MAX_PAYLOAD_BYTES = 512 * 1024; // 512 KB 上限防護
 const API_KV_TTL_SECONDS = 60 * 60 * 24 * 90; // 90 天有效期
+const SUBKEYS_REGISTRY_KV_KEY = "api_keys:registry";
 
 /**
  * 常數時間字串比對，防範時序旁路攻擊 (Timing Attack)
@@ -46,6 +47,160 @@ function timingSafeEqualStr(a, b) {
     diff |= aBytes[i] ^ bBytes[i];
   }
   return diff === 0;
+}
+
+/**
+ * 計算字串之 SHA-256 Hex 雜湊（子金鑰僅於 KV 儲存雜湊值，不落盤明文）
+ */
+async function sha256Hex(input) {
+  const data = new TextEncoder().encode(String(input || ""));
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(hashBuffer))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
+ * 產生高強度子金鑰明文 (僅於簽發當下回傳一次)
+ */
+function generateSubKeyToken() {
+  const part1 = uuid().replace(/-/g, "");
+  const part2 = uuid().replace(/-/g, "").slice(0, 16);
+  return `ltp_sk_${part1}${part2}`;
+}
+
+/**
+ * 產生遮罩顯示字串 (例如 ltp_sk_9f8a...3c1d)
+ */
+function maskToken(rawToken) {
+  const s = String(rawToken || "");
+  if (s.length <= 14) return `${s.slice(0, 4)}...`;
+  return `${s.slice(0, 11)}...${s.slice(-4)}`;
+}
+
+async function loadSubKeysRegistry(kv) {
+  const raw = await kv.get(SUBKEYS_REGISTRY_KV_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+async function saveSubKeysRegistry(kv, list) {
+  await kv.put(SUBKEYS_REGISTRY_KV_KEY, JSON.stringify(list));
+}
+
+/**
+ * 解析環境變數中的 Master Token 清單（支援以逗號分隔多組靜態 Master Token）
+ */
+function getMasterTokens(env) {
+  const rawMaster = env.API_SECRET_TOKEN || env.SHARE_SECRET_TOKEN || "";
+  return String(rawMaster)
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
+/**
+ * 驗證請求 Token（同時支援 Master Token 清單與 KV 動態子金鑰）
+ */
+async function authenticateApiRequest(request, env) {
+  const masterTokens = getMasterTokens(env);
+  if (masterTokens.length === 0) {
+    return {
+      ok: false,
+      status: 503,
+      error: "伺服器尚未配置 API_SECRET_TOKEN (或 SHARE_SECRET_TOKEN)，拒絕未受保護的 API 存取",
+    };
+  }
+
+  const providedToken = extractAuthToken(request);
+  if (!providedToken) {
+    return {
+      ok: false,
+      status: 401,
+      error: "未授權存取 (401 Unauthorized)：請於 Authorization: Bearer <TOKEN> 或 X-API-Key 提供有效金鑰",
+    };
+  }
+
+  // 1. 先比對是否為 Master Token (支援多組逗號分隔之管理員金鑰)
+  for (const master of masterTokens) {
+    if (timingSafeEqualStr(providedToken, master)) {
+      return {
+        ok: true,
+        role: "admin",
+        keyId: "master",
+        label: "Master Admin Token",
+        permissions: ["read", "write", "delete", "admin"],
+        allowedChannels: ["*"],
+      };
+    }
+  }
+
+  // 2. 再比對 KV 子金鑰註冊表 (以 SHA-256 雜湊比對)
+  if (env.SHARED_TRIPS) {
+    const tokenHash = await sha256Hex(providedToken);
+    const registry = await loadSubKeysRegistry(env.SHARED_TRIPS);
+    const matched = registry.find((k) => k && k.tokenHash && timingSafeEqualStr(k.tokenHash, tokenHash));
+
+    if (matched) {
+      if (matched.expiresAt && new Date(matched.expiresAt).getTime() < Date.now()) {
+        return {
+          ok: false,
+          status: 401,
+          error: `未授權存取：子金鑰「${matched.label || matched.id}」已過期`,
+        };
+      }
+      return {
+        ok: true,
+        role: "subkey",
+        keyId: matched.id,
+        label: matched.label || matched.id,
+        permissions: Array.isArray(matched.permissions) ? matched.permissions : ["read", "write"],
+        allowedChannels: Array.isArray(matched.allowedChannels) && matched.allowedChannels.length > 0
+          ? matched.allowedChannels
+          : ["*"],
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    status: 401,
+    error: "未授權存取 (401 Unauthorized)：無效或已撤銷的 API 金鑰",
+  };
+}
+
+/**
+ * 檢查金鑰是否具備指定動作與通道之權限
+ */
+function checkKeyAuthorization(auth, requiredPermission, targetChannel = "default") {
+  if (!auth?.ok) {
+    return { allowed: false, status: auth?.status || 401, error: auth?.error || "未授權" };
+  }
+  if (auth.role === "admin") {
+    return { allowed: true };
+  }
+  const channels = auth.allowedChannels || ["*"];
+  if (!channels.includes("*") && !channels.includes(targetChannel)) {
+    return {
+      allowed: false,
+      status: 403,
+      error: `權限不足 (403 Forbidden)：子金鑰「${auth.label}」未獲授權存取通道 "${targetChannel}"`,
+    };
+  }
+  const perms = auth.permissions || [];
+  if (!perms.includes(requiredPermission) && !perms.includes("admin")) {
+    return {
+      allowed: false,
+      status: 403,
+      error: `權限不足 (403 Forbidden)：子金鑰「${auth.label}」缺少 "${requiredPermission}" 權限`,
+    };
+  }
+  return { allowed: true };
 }
 
 /**
@@ -209,26 +364,139 @@ export default {
         headers: { "Content-Type": "application/json", ...corsHeaders }
       });
 
+    // ── 路由 /api/v1/keys — 子金鑰簽發、清單查詢與撤銷管理接口 (僅限 Master Token) ──
+    if (url.pathname === "/api/v1/keys") {
+      if (!env.SHARED_TRIPS) {
+        return json({ error: "KV namespace SHARED_TRIPS 未綁定" }, 500);
+      }
+
+      const auth = await authenticateApiRequest(request, env);
+      if (!auth.ok) {
+        return json({ error: auth.error }, auth.status);
+      }
+      if (auth.role !== "admin") {
+        return json({ error: "權限不足 (403 Forbidden)：僅限 Master Admin Token 可管理或簽發子金鑰" }, 403);
+      }
+
+      // 1. GET /api/v1/keys — 列出所有已簽發的子金鑰 (僅回傳遮罩與權限設定，不回傳雜湊或明文)
+      if (request.method === "GET") {
+        const registry = await loadSubKeysRegistry(env.SHARED_TRIPS);
+        const now = Date.now();
+        const safeKeys = registry.map((k) => ({
+          id: k.id,
+          label: k.label,
+          tokenMask: k.tokenMask,
+          permissions: k.permissions || ["read", "write"],
+          allowedChannels: k.allowedChannels || ["*"],
+          createdAt: k.createdAt,
+          expiresAt: k.expiresAt || null,
+          isExpired: Boolean(k.expiresAt && new Date(k.expiresAt).getTime() < now),
+        }));
+        return json({ success: true, keys: safeKeys });
+      }
+
+      // 2. POST /api/v1/keys — 簽發新子金鑰 (明文 token 僅在建立當下回傳一次)
+      if (request.method === "POST") {
+        let body = {};
+        try {
+          body = await request.json();
+        } catch {
+          return json({ error: "無效的 JSON 請求內容" }, 400);
+        }
+
+        const label = String(body.label || "").trim() || `SubKey-${new Date().toISOString().slice(0, 10)}`;
+        const validPerms = ["read", "write", "delete"];
+        const rawPerms = Array.isArray(body.permissions) ? body.permissions : ["read", "write"];
+        const permissions = rawPerms.filter((p) => validPerms.includes(p));
+        if (permissions.length === 0) permissions.push("read");
+
+        const rawChannels = Array.isArray(body.allowedChannels)
+          ? body.allowedChannels
+          : typeof body.allowedChannels === "string"
+            ? body.allowedChannels.split(",")
+            : ["*"];
+        const allowedChannels = rawChannels
+          .map((c) => String(c || "").trim())
+          .filter((c) => c === "*" || /^[a-zA-Z0-9_-]{1,64}$/.test(c));
+        if (allowedChannels.length === 0) allowedChannels.push("*");
+
+        const expiresInDays = Number(body.expiresInDays) || 0;
+        const expiresAt = expiresInDays > 0
+          ? new Date(Date.now() + expiresInDays * 86400 * 1000).toISOString()
+          : null;
+
+        const rawToken = generateSubKeyToken();
+        const tokenHash = await sha256Hex(rawToken);
+        const tokenMask = maskToken(rawToken);
+        const id = `key_${uuid().slice(0, 12)}`;
+        const createdAt = new Date().toISOString();
+
+        const registry = await loadSubKeysRegistry(env.SHARED_TRIPS);
+        const newEntry = {
+          id,
+          label,
+          tokenHash,
+          tokenMask,
+          permissions,
+          allowedChannels,
+          createdAt,
+          expiresAt,
+        };
+        registry.push(newEntry);
+        await saveSubKeysRegistry(env.SHARED_TRIPS, registry);
+
+        return json({
+          success: true,
+          key: {
+            id,
+            label,
+            token: rawToken, // 僅此次回傳明文
+            tokenMask,
+            permissions,
+            allowedChannels,
+            createdAt,
+            expiresAt,
+          },
+        });
+      }
+
+      // 3. DELETE /api/v1/keys?id=<keyId> — 立即撤銷指定子金鑰
+      if (request.method === "DELETE") {
+        let keyId = url.searchParams.get("id") || "";
+        if (!keyId) {
+          try {
+            const body = await request.json();
+            keyId = body?.id || "";
+          } catch {
+            keyId = "";
+          }
+        }
+        keyId = String(keyId).trim();
+        if (!keyId) {
+          return json({ error: "請提供欲撤銷的子金鑰 id (?id=key_...)" }, 400);
+        }
+
+        const registry = await loadSubKeysRegistry(env.SHARED_TRIPS);
+        const nextRegistry = registry.filter((k) => k && k.id !== keyId);
+        if (nextRegistry.length === registry.length) {
+          return json({ error: `找不到指定的子金鑰 (${keyId})` }, 404);
+        }
+        await saveSubKeysRegistry(env.SHARED_TRIPS, nextRegistry);
+        return json({ success: true, revokedId: keyId, remainingCount: nextRegistry.length });
+      }
+
+      return json({ error: `不支援的 HTTP 方法: ${request.method}` }, 405);
+    }
+
     // ── 路由 /api/v1/ingest (或 /api/v1/sync) — 帶認證的外部寫入與前端同步接口 ──
     if (url.pathname === "/api/v1/ingest" || url.pathname === "/api/v1/sync") {
       if (!env.SHARED_TRIPS) {
         return json({ error: "KV namespace SHARED_TRIPS 未綁定" }, 500);
       }
 
-      const expectedToken = env.API_SECRET_TOKEN || env.SHARE_SECRET_TOKEN;
-      if (!expectedToken) {
-        return json(
-          { error: "伺服器尚未配置 API_SECRET_TOKEN (或 SHARE_SECRET_TOKEN)，拒絕未受保護的 API 存取" },
-          503
-        );
-      }
-
-      const providedToken = extractAuthToken(request);
-      if (!providedToken || !timingSafeEqualStr(providedToken, expectedToken)) {
-        return json(
-          { error: "未授權存取 (401 Unauthorized)：請於 Authorization: Bearer <TOKEN> 或 X-API-Key 提供有效金鑰" },
-          401
-        );
+      const auth = await authenticateApiRequest(request, env);
+      if (!auth.ok) {
+        return json({ error: auth.error }, auth.status);
       }
 
       const queryChannel = url.searchParams.get("channel");
@@ -236,6 +504,10 @@ export default {
       // 1. GET /api/v1/ingest — 讀取雲端通道目前資料 (供前端自動拉取或外部查詢)
       if (request.method === "GET") {
         const channel = sanitizeChannel(queryChannel);
+        const access = checkKeyAuthorization(auth, "read", channel);
+        if (!access.allowed) {
+          return json({ error: access.error }, access.status);
+        }
         const kvKey = `api_sync:${channel}`;
         const rawStored = await env.SHARED_TRIPS.get(kvKey);
 
@@ -307,6 +579,10 @@ export default {
 
         const normalizedInput = Array.isArray(parsedBody) ? { tickets: parsedBody } : parsedBody;
         const channel = sanitizeChannel(normalizedInput.channel || queryChannel);
+        const access = checkKeyAuthorization(auth, "write", channel);
+        if (!access.allowed) {
+          return json({ error: access.error }, access.status);
+        }
         const mode = (normalizedInput.mode || url.searchParams.get("mode") || (request.method === "PUT" ? "replace" : "merge")) === "replace"
           ? "replace"
           : "merge";
@@ -384,6 +660,10 @@ export default {
       // 3. DELETE /api/v1/ingest — 清空指定雲端同步通道
       if (request.method === "DELETE") {
         const channel = sanitizeChannel(queryChannel);
+        const access = checkKeyAuthorization(auth, "delete", channel);
+        if (!access.allowed) {
+          return json({ error: access.error }, access.status);
+        }
         const kvKey = `api_sync:${channel}`;
         await env.SHARED_TRIPS.delete(kvKey);
         return json({

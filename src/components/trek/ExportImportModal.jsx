@@ -24,6 +24,10 @@ import {
     Bug,
     FileJson,
     Copy,
+    Key,
+    Trash2,
+    Plus,
+    RefreshCw,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTrek } from '../../contexts/TrekContext';
@@ -41,6 +45,9 @@ import {
     setLastSyncedRevision,
     pullFromIngestApi,
     pushToIngestApi,
+    listSubKeys,
+    createSubKey,
+    revokeSubKey,
     buildIngestCurlExamples,
 } from '../../services/api/ingestApiService';
 import { generateTripIcs, downloadIcsFile } from '../../services/export/icsExportService';
@@ -125,6 +132,15 @@ export default function ExportImportModal({ isOpen, onClose }) {
     // ── 外部寫入 API 同步配置狀態 ──────────────────────────────────────────
     const [apiConfig, setApiConfig] = useState(() => getStoredApiSyncConfig());
     const [isSyncingApi, setIsSyncingApi] = useState(false);
+
+    // ── 子金鑰管理 (Sub-Key Management) 狀態 ──────────────────────────────
+    const [subKeys, setSubKeys] = useState([]);
+    const [isLoadingSubKeys, setIsLoadingSubKeys] = useState(false);
+    const [newKeyLabel, setNewKeyLabel] = useState('');
+    const [newKeyPermMode, setNewKeyPermMode] = useState('read_write'); // 'read_write' | 'write_only' | 'read_only'
+    const [newKeyChannels, setNewKeyChannels] = useState('*');
+    const [newKeyExpiresDays, setNewKeyExpiresDays] = useState(0); // 0 = 永久
+    const [newlyIssuedKey, setNewlyIssuedKey] = useState(null);
 
     useEffect(() => {
         setNewStartDate(activeTrip?.startDate || '');
@@ -546,6 +562,100 @@ export default function ExportImportModal({ isOpen, onClose }) {
         }
     };
 
+    // ── 子金鑰簽發、查詢與撤銷操作 (需 Master Token) ────────────────────────
+    const handleLoadSubKeys = async () => {
+        const saved = saveApiSyncConfig(apiConfig);
+        setApiConfig(saved);
+        if (!saved.apiToken) {
+            toast.error('請先於上方輸入 Master API Secret Token 才能管理子金鑰');
+            return;
+        }
+        setIsLoadingSubKeys(true);
+        try {
+            const list = await listSubKeys({
+                endpointUrl: saved.endpointUrl,
+                apiToken: saved.apiToken,
+            });
+            setSubKeys(list);
+            toast.success(`已載入 ${list.length} 組子金鑰`);
+        } catch (err) {
+            toast.error(`載入子金鑰失敗：${err.message}`);
+        } finally {
+            setIsLoadingSubKeys(false);
+        }
+    };
+
+    const handleCreateSubKey = async () => {
+        const saved = saveApiSyncConfig(apiConfig);
+        setApiConfig(saved);
+        if (!saved.apiToken) {
+            toast.error('請先於上方輸入 Master API Secret Token 才能簽發子金鑰');
+            return;
+        }
+        if (!newKeyLabel.trim()) {
+            toast.error('請輸入子金鑰名稱／用途（例如：旅伴小明、iOS 捷徑）');
+            return;
+        }
+
+        const permissions =
+            newKeyPermMode === 'write_only'
+                ? ['write']
+                : newKeyPermMode === 'read_only'
+                    ? ['read']
+                    : ['read', 'write'];
+
+        const allowedChannels = String(newKeyChannels || '*')
+            .split(',')
+            .map((c) => c.trim())
+            .filter(Boolean);
+
+        setIsLoadingSubKeys(true);
+        try {
+            const created = await createSubKey({
+                endpointUrl: saved.endpointUrl,
+                apiToken: saved.apiToken,
+                label: newKeyLabel.trim(),
+                permissions,
+                allowedChannels: allowedChannels.length > 0 ? allowedChannels : ['*'],
+                expiresInDays: Number(newKeyExpiresDays) || 0,
+            });
+            setNewlyIssuedKey(created);
+            setNewKeyLabel('');
+            const list = await listSubKeys({
+                endpointUrl: saved.endpointUrl,
+                apiToken: saved.apiToken,
+            });
+            setSubKeys(list);
+            toast.success(`🔑 已簽發子金鑰「${created.label}」！請立即複製保存`);
+        } catch (err) {
+            toast.error(`簽發失敗：${err.message}`);
+        } finally {
+            setIsLoadingSubKeys(false);
+        }
+    };
+
+    const handleRevokeSubKey = async (keyItem) => {
+        const saved = saveApiSyncConfig(apiConfig);
+        setApiConfig(saved);
+        setIsLoadingSubKeys(true);
+        try {
+            await revokeSubKey({
+                endpointUrl: saved.endpointUrl,
+                apiToken: saved.apiToken,
+                keyId: keyItem.id,
+            });
+            setSubKeys((prev) => prev.filter((k) => k.id !== keyItem.id));
+            if (newlyIssuedKey?.id === keyItem.id) {
+                setNewlyIssuedKey(null);
+            }
+            toast.success(`🗑️ 已立即撤銷子金鑰「${keyItem.label}」`);
+        } catch (err) {
+            toast.error(`撤銷失敗：${err.message}`);
+        } finally {
+            setIsLoadingSubKeys(false);
+        }
+    };
+
     const tabs = [
         { key: 'json_import', label: '📦 JSON 整包匯入' },
         { key: 'api_sync', label: '🔌 API 寫入接口' },
@@ -857,6 +967,169 @@ export default function ExportImportModal({ isOpen, onClose }) {
                                     <pre className="p-3 bg-slate-950 text-slate-200 text-[10px] font-mono overflow-x-auto leading-relaxed max-h-48">
                                         {buildIngestCurlExamples(apiConfig)}
                                     </pre>
+                                </div>
+
+                                {/* ── 子金鑰管理中心 (Sub-Key Management) ──────────────────── */}
+                                <div className="border border-indigo-200/80 bg-slate-50/70 rounded-2xl p-4 space-y-3">
+                                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                                        <div className="flex items-center gap-1.5">
+                                            <Key className="w-4 h-4 text-indigo-600" />
+                                            <h4 className="text-xs font-bold text-slate-800">
+                                                🔑 多組子金鑰管理介面（分發給旅伴／腳本／AI，可單獨限權與撤銷）
+                                            </h4>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={handleLoadSubKeys}
+                                            disabled={isLoadingSubKeys}
+                                            className="px-2.5 py-1 bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg text-[11px] font-bold flex items-center gap-1 transition"
+                                        >
+                                            <RefreshCw className={`w-3 h-3 ${isLoadingSubKeys ? 'animate-spin' : ''}`} />
+                                            <span>重新載入清單</span>
+                                        </button>
+                                    </div>
+
+                                    <p className="text-[11px] text-slate-500 leading-relaxed">
+                                        上方填入您的 <b>Master Admin Token</b>（即 Worker 的 <code className="font-mono">API_SECRET_TOKEN</code>）後，即可在此簽發多組受限子金鑰（<code className="font-mono">ltp_sk_...</code>）。子金鑰在雲端僅儲存 SHA-256 雜湊值，可隨時單獨撤銷而不影響主金鑰。
+                                    </p>
+
+                                    {/* 簽發新子金鑰表單 */}
+                                    <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 bg-white p-3 rounded-xl border border-slate-200">
+                                        <div className="sm:col-span-4">
+                                            <label className="block text-[10px] font-bold text-slate-600 mb-1">名稱／用途</label>
+                                            <input
+                                                type="text"
+                                                value={newKeyLabel}
+                                                onChange={(e) => setNewKeyLabel(e.target.value)}
+                                                placeholder="例：旅伴小明 / iOS 捷徑"
+                                                className="w-full border border-gray-300 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-indigo-500"
+                                            />
+                                        </div>
+                                        <div className="sm:col-span-3">
+                                            <label className="block text-[10px] font-bold text-slate-600 mb-1">授權權限</label>
+                                            <select
+                                                value={newKeyPermMode}
+                                                onChange={(e) => setNewKeyPermMode(e.target.value)}
+                                                className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-xs bg-white font-bold text-slate-700"
+                                            >
+                                                <option value="read_write">讀寫 (read + write)</option>
+                                                <option value="write_only">僅寫入 (write-only)</option>
+                                                <option value="read_only">唯讀 (read-only)</option>
+                                            </select>
+                                        </div>
+                                        <div className="sm:col-span-3">
+                                            <label className="block text-[10px] font-bold text-slate-600 mb-1">允許通道 (逗號分隔)</label>
+                                            <input
+                                                type="text"
+                                                value={newKeyChannels}
+                                                onChange={(e) => setNewKeyChannels(e.target.value)}
+                                                placeholder="* 或 default,tokyo2026"
+                                                className="w-full border border-gray-300 rounded-lg px-2.5 py-1.5 text-xs font-mono focus:outline-none focus:border-indigo-500"
+                                            />
+                                        </div>
+                                        <div className="sm:col-span-2">
+                                            <label className="block text-[10px] font-bold text-slate-600 mb-1">效期</label>
+                                            <select
+                                                value={newKeyExpiresDays}
+                                                onChange={(e) => setNewKeyExpiresDays(Number(e.target.value))}
+                                                className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-xs bg-white font-bold text-slate-700"
+                                            >
+                                                <option value={0}>永久</option>
+                                                <option value={7}>7 天</option>
+                                                <option value={30}>30 天</option>
+                                                <option value={90}>90 天</option>
+                                            </select>
+                                        </div>
+                                        <div className="sm:col-span-12 flex justify-end pt-1">
+                                            <button
+                                                type="button"
+                                                onClick={handleCreateSubKey}
+                                                disabled={isLoadingSubKeys}
+                                                className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-lg text-xs font-bold flex items-center gap-1 transition"
+                                            >
+                                                <Plus className="w-3.5 h-3.5" />
+                                                <span>簽發新子金鑰</span>
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {/* 剛簽發之新子金鑰一次性明文顯示橫幅 */}
+                                    {newlyIssuedKey && (
+                                        <div className="p-3 bg-emerald-50 border border-emerald-300 rounded-xl space-y-2">
+                                            <div className="flex items-center justify-between gap-2">
+                                                <span className="text-xs font-bold text-emerald-900">
+                                                    🎉 已簽發「{newlyIssuedKey.label}」（明文僅顯示這一次，請立即複製保存！）
+                                                </span>
+                                                <button
+                                                    type="button"
+                                                    onClick={async () => {
+                                                        try {
+                                                            await navigator.clipboard.writeText(newlyIssuedKey.token);
+                                                            toast.success('已複製子金鑰明文！');
+                                                        } catch {
+                                                            toast.error('請手動選取下方金鑰複製');
+                                                        }
+                                                    }}
+                                                    className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-[11px] font-bold flex items-center gap-1 shrink-0"
+                                                >
+                                                    <Copy className="w-3 h-3" />
+                                                    <span>複製子金鑰</span>
+                                                </button>
+                                            </div>
+                                            <div className="p-2 bg-white border border-emerald-200 rounded-lg font-mono text-xs text-slate-900 select-all break-all">
+                                                {newlyIssuedKey.token}
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* 已簽發子金鑰清單 */}
+                                    {subKeys.length > 0 ? (
+                                        <div className="space-y-1.5">
+                                            {subKeys.map((k) => (
+                                                <div
+                                                    key={k.id}
+                                                    className="bg-white border border-slate-200 rounded-xl px-3 py-2 flex items-center justify-between gap-2 flex-wrap"
+                                                >
+                                                    <div className="min-w-0 flex-1">
+                                                        <div className="flex items-center gap-2 flex-wrap">
+                                                            <span className="text-xs font-bold text-slate-800">{k.label}</span>
+                                                            <code className="text-[10px] font-mono bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded">
+                                                                {k.tokenMask}
+                                                            </code>
+                                                            <span className="text-[10px] font-bold bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded">
+                                                                {(k.permissions || []).join(' + ')}
+                                                            </span>
+                                                            <span className="text-[10px] font-mono bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded">
+                                                                通道: {(k.allowedChannels || ['*']).join(', ')}
+                                                            </span>
+                                                            {k.isExpired && (
+                                                                <span className="text-[10px] font-bold bg-rose-100 text-rose-700 px-1.5 py-0.5 rounded">
+                                                                    已過期
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                        <div className="text-[10px] text-slate-400 mt-0.5">
+                                                            建立於 {k.createdAt ? k.createdAt.slice(0, 10) : '-'}
+                                                            {k.expiresAt ? ` · 到期日 ${k.expiresAt.slice(0, 10)}` : ' · 永久有效'}
+                                                        </div>
+                                                    </div>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleRevokeSubKey(k)}
+                                                        disabled={isLoadingSubKeys}
+                                                        className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-[11px] font-bold flex items-center gap-1 transition shrink-0"
+                                                    >
+                                                        <Trash2 className="w-3 h-3" />
+                                                        <span>撤銷</span>
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <div className="text-center py-3 text-[11px] text-slate-400 bg-white rounded-xl border border-dashed border-slate-200">
+                                            尚未載入或尚未簽發任何子金鑰（點擊右上角「重新載入清單」或於上方直接簽發）
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                         )}
