@@ -7,6 +7,7 @@
  */
 
 import { getDB, STORES, tripRepo, dayPlanRepo, reservationRepo, todoRepo } from '../db';
+import { isDateOverlap } from '../reservations/unifiedReservationService';
 
 /**
  * 計算兩日期之間的完整天數差 (dateB - dateA)
@@ -51,12 +52,13 @@ export function shiftDateString(dateStr, dayDiff) {
 }
 
 /**
- * 執行全旅程日期平移重錨定 (具備單一跨 Store 原子交易保護)
+ * 執行全旅程日期平移重錨定 (具備單一跨 Store 原子交易保護，並同步平移關聯之機票、住宿與活動)
  * @param {string} tripId
  * @param {string} newStartDate YYYY-MM-DD
- * @returns {Promise<{ success: boolean, dayDiff: number, shiftedTrip: Object, shiftedPlansCount: number, shiftedReservationsCount: number, shiftedTodosCount: number }>}
+ * @param {Object} [externalData] - 可選：{ tickets, hotels, activities, setTickets, setHotels, setActivities }
+ * @returns {Promise<{ success: boolean, dayDiff: number, shiftedTrip: Object, shiftedPlansCount: number, shiftedReservationsCount: number, shiftedTodosCount: number, shiftedTicketsCount?: number, shiftedHotelsCount?: number, shiftedActivitiesCount?: number }>}
  */
-export async function shiftTripDates(tripId, newStartDate) {
+export async function shiftTripDates(tripId, newStartDate, externalData = null) {
     if (!tripId || !newStartDate) {
         throw new Error('缺少必要參數 tripId 或 newStartDate');
     }
@@ -145,12 +147,78 @@ export async function shiftTripDates(tripId, newStartDate) {
     // 等待交易全數確認 (若任一操作失敗，IndexedDB 自動回滾全體)
     await tx.done;
 
+    // ── 階段四：同步平移關聯之全域機票、住宿與活動（解決雙軌日期平移斷鏈問題）──
+    let shiftedTicketsCount = 0;
+    let shiftedHotelsCount = 0;
+    let shiftedActivitiesCount = 0;
+
+    if (externalData && typeof externalData === 'object') {
+        const origStart = trip.startDate;
+        const origEnd = trip.endDate || origStart;
+
+        if (Array.isArray(externalData.tickets) && typeof externalData.setTickets === 'function') {
+            const nextTickets = externalData.tickets.map((t) => {
+                if (!t) return t;
+                const belongs =
+                    (t.tripId && t.tripId === tripId) ||
+                    isDateOverlap(t.outboundDate, t.inboundDate || t.outboundDate, origStart, origEnd);
+                if (!belongs) return t;
+                shiftedTicketsCount++;
+                return {
+                    ...t,
+                    outboundDate: shiftDateString(t.outboundDate, dayDiff),
+                    outboundArrivalDate: shiftDateString(t.outboundArrivalDate, dayDiff),
+                    inboundDate: shiftDateString(t.inboundDate, dayDiff),
+                    inboundArrivalDate: shiftDateString(t.inboundArrivalDate, dayDiff),
+                };
+            });
+            if (shiftedTicketsCount > 0) externalData.setTickets(nextTickets);
+        }
+
+        if (Array.isArray(externalData.hotels) && typeof externalData.setHotels === 'function') {
+            const nextHotels = externalData.hotels.map((h) => {
+                if (!h) return h;
+                const belongs =
+                    (h.tripId && h.tripId === tripId) ||
+                    isDateOverlap(h.checkIn, h.checkOut, origStart, origEnd);
+                if (!belongs) return h;
+                shiftedHotelsCount++;
+                return {
+                    ...h,
+                    checkIn: shiftDateString(h.checkIn, dayDiff),
+                    checkOut: shiftDateString(h.checkOut, dayDiff),
+                };
+            });
+            if (shiftedHotelsCount > 0) externalData.setHotels(nextHotels);
+        }
+
+        if (Array.isArray(externalData.activities) && typeof externalData.setActivities === 'function') {
+            const nextActivities = externalData.activities.map((a) => {
+                if (!a) return a;
+                const belongs =
+                    (a.tripId && a.tripId === tripId) ||
+                    isDateOverlap(a.startDate, a.endDate || a.startDate, origStart, origEnd);
+                if (!belongs) return a;
+                shiftedActivitiesCount++;
+                return {
+                    ...a,
+                    startDate: shiftDateString(a.startDate, dayDiff),
+                    endDate: shiftDateString(a.endDate, dayDiff),
+                };
+            });
+            if (shiftedActivitiesCount > 0) externalData.setActivities(nextActivities);
+        }
+    }
+
     return {
         success: true,
         dayDiff,
         shiftedTrip,
         shiftedPlansCount: shiftedPlans.length,
         shiftedReservationsCount: shiftedReservations.length,
-        shiftedTodosCount: shiftedTodos.length
+        shiftedTodosCount: shiftedTodos.length,
+        shiftedTicketsCount,
+        shiftedHotelsCount,
+        shiftedActivitiesCount,
     };
 }

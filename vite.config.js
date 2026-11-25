@@ -81,6 +81,13 @@ export default defineConfig({
     },
     test: {
         environment: 'jsdom',
-        globals: true
+        globals: true,
+        exclude: process.env.RUN_LIVE_TESTS === 'true'
+            ? ['**/node_modules/**', '**/dist/**']
+            : [
+                '**/node_modules/**',
+                '**/dist/**',
+                'src/services/__tests__/realServicesVerification.test.js',
+            ],
     }
 })

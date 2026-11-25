@@ -14,6 +14,8 @@ import {
     expenseRepo,
     packingRepo,
     todoRepo,
+    backupRepo,
+    exportAllIndexedDBData,
 } from '../db';
 import { assembleTripDays } from '../trips/tripExportAssembler';
 
@@ -658,8 +660,14 @@ export async function executeUnifiedJsonImport({
             });
         }
 
-        // 若為覆寫模式，清除目標旅程既有且本次 JSON 有帶入的子集合
+        // 若為覆寫模式，先於 IndexedDB BACKUPS 建立自動還原快照，再清除目標旅程既有且本次 JSON 有帶入的子集合
         if (mode === 'replace' && targetTripId && tripTarget === 'current') {
+            try {
+                const snapshot = await exportAllIndexedDBData();
+                await backupRepo.createBackup(`Pre-replace auto backup (${targetTripId})`, snapshot);
+            } catch {
+                // 備份失敗不阻斷匯入，但盡力保留還原點
+            }
             if (normalized.dayPlans.length > 0) {
                 const oldPlans = await repos.dayPlanRepo.getByTrip(targetTripId);
                 await Promise.all(oldPlans.map((p) => repos.dayPlanRepo.delete(p.id)));

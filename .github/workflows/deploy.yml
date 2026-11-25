@@ -34,13 +34,16 @@ jobs:
         with:
           node-version: 24
 
-      - name: Install dependencies
-        run: npm install
+      - name: Install dependencies (Lockfile Reproducible)
+        run: npm ci
+
+      - name: Security Dependency Audit (SCA)
+        run: npm audit --omit=dev --audit-level=high
 
       - name: Run Linter
         run: npm run lint
 
-      - name: Run Unit Tests
+      - name: Run Unit & Integration Tests (Deterministic CI Gate)
         run: npm test
 
       - name: Build project
@@ -72,8 +75,9 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v5
 
-  # 3. 部署 Cloudflare Worker (Deploy Worker，需配置 API Token 與 KV ID)
+  # 3. 部署 Cloudflare Worker (Deploy Worker，必須先通過 build 內的 Lint/SCA/Tests 門禁)
   deploy-worker:
+    needs: build
     runs-on: ubuntu-latest
     name: Deploy Worker
     steps:

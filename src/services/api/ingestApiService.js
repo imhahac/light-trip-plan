@@ -19,7 +19,7 @@ export function getDefaultApiSyncConfig() {
         apiToken: '',
         channel: 'default',
         autoPullOnLoad: true,
-        importMode: 'replace', // 'merge' | 'replace'
+        importMode: 'merge', // 預設 'merge' 保護離線本地編輯不被覆寫
     };
 }
 

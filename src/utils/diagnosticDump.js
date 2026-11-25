@@ -19,7 +19,7 @@ export async function generateDiagnosticReport() {
                 height: window.innerHeight,
                 devicePixelRatio: window.devicePixelRatio
             },
-            url: window.location.href,
+            url: `${window.location.origin}${window.location.pathname}`,
             pathname: window.location.pathname
         },
         storage: {

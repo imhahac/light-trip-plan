@@ -32,6 +32,182 @@ function uuid() {
 const MAX_PAYLOAD_BYTES = 512 * 1024; // 512 KB 上限防護
 const API_KV_TTL_SECONDS = 60 * 60 * 24 * 90; // 90 天有效期
 const SUBKEYS_REGISTRY_KV_KEY = "api_keys:registry";
+const DEFAULT_ALLOWED_ORIGINS = [
+  "https://imhahac.github.io",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+];
+const UPSTREAM_TIMEOUT_MS = 8000;
+const MAX_REDIRECT_HOPS = 5;
+
+/**
+ * 結構化資安稽核日誌（嚴禁輸出任何明文 Token / Credential）
+ */
+function auditLog(event, meta = {}) {
+  try {
+    console.log(JSON.stringify({
+      ts: new Date().toISOString(),
+      service: "light-trip-plan-worker",
+      event,
+      ...meta,
+    }));
+  } catch {
+    // ignore logging failure
+  }
+}
+
+/**
+ * 依據 env.ALLOWED_ORIGINS 白名單解析 CORS Origin（不再反射任意惡意 Origin）
+ */
+export function resolveAllowedCorsOrigin(requestOrigin, env = {}) {
+  if (!requestOrigin) return "null";
+  const normalizedReq = String(requestOrigin).trim().replace(/\/+$/, "").toLowerCase();
+  const configured = env.ALLOWED_ORIGINS
+    ? String(env.ALLOWED_ORIGINS)
+        .split(",")
+        .map((o) => o.trim().replace(/\/+$/, "").toLowerCase())
+        .filter(Boolean)
+    : DEFAULT_ALLOWED_ORIGINS;
+
+  if (configured.includes("*")) return "*";
+  if (configured.includes(normalizedReq)) return requestOrigin;
+  return "null";
+}
+
+/**
+ * 嚴格驗證 URL 是否為公開網際網路位址（防範 SSRF、302 內網跳轉、IPv6 私有段、八進位/整數 IP）
+ */
+export function validateSafePublicUrl(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return { safe: false, status: 400, error: "無效的 URL 格式" };
+  }
+
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    return { safe: false, status: 400, error: "不支援的協議，僅允許 HTTP/HTTPS" };
+  }
+
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (
+    !hostname ||
+    hostname === "localhost" ||
+    hostname.endsWith(".localhost") ||
+    hostname.endsWith(".local") ||
+    hostname.endsWith(".internal") ||
+    hostname === "metadata.google.internal" ||
+    hostname === "0.0.0.0" ||
+    hostname === "::1" ||
+    hostname === "::" ||
+    hostname.startsWith("127.") ||
+    hostname.startsWith("10.") ||
+    hostname.startsWith("192.168.") ||
+    hostname.startsWith("169.254.") ||
+    hostname.startsWith("0.") ||
+    /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(hostname) ||
+    /^100\.(6[4-9]|[7-9]\d|1[0-1]\d|12[0-7])\./.test(hostname) ||
+    /^::ffff:/i.test(hostname) ||
+    /^(fc|fd|fe[89ab])[0-9a-f]{2}:/i.test(hostname) ||
+    /^\d+$/.test(hostname) ||
+    /^0x[0-9a-f]+$/i.test(hostname) ||
+    /^0\d+\./.test(hostname)
+  ) {
+    return { safe: false, status: 403, error: "禁止存取本機、內網、雲端 Metadata 或私有 IP 網址" };
+  }
+
+  return { safe: true, url: parsed.toString() };
+}
+
+/**
+ * 具備逾時控制之上游 fetch
+ */
+async function fetchWithTimeout(targetUrl, init = {}, timeoutMs = UPSTREAM_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(targetUrl, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * 讀取並依時序重播 Append-Only Inbox 事件（消除 KV 併發讀寫 Lost Update）
+ */
+async function replayChannelInbox(kv, channel) {
+  const inboxPrefix = `api_inbox:${channel}:`;
+  const legacyKey = `api_sync:${channel}`;
+  let eventKeys = [];
+
+  if (typeof kv.list === "function") {
+    let cursor;
+    do {
+      const page = await kv.list({ prefix: inboxPrefix, cursor });
+      if (Array.isArray(page?.keys)) {
+        eventKeys.push(...page.keys.map((k) => k.name));
+      }
+      cursor = page?.list_complete ? undefined : page?.cursor;
+    } while (cursor);
+  }
+
+  eventKeys.sort(); // 零補齊時間戳前綴保證嚴格時序
+
+  if (eventKeys.length === 0) {
+    // 向下相容：讀取舊版單鍵 api_sync:<channel>
+    const rawLegacy = await kv.get(legacyKey);
+    if (!rawLegacy) {
+      return { revision: 0, updatedAt: null, snapshotId: null, payload: null };
+    }
+    try {
+      const parsedLegacy = JSON.parse(rawLegacy);
+      return {
+        revision: Number(parsedLegacy.revision) || 1,
+        updatedAt: parsedLegacy.updatedAt || null,
+        snapshotId: parsedLegacy.snapshotId || null,
+        payload: parsedLegacy.payload || parsedLegacy,
+      };
+    } catch {
+      return { revision: 0, updatedAt: null, snapshotId: null, payload: null };
+    }
+  }
+
+  // 批次讀取所有事件
+  const rawEvents = await Promise.all(eventKeys.map((k) => kv.get(k)));
+  const events = rawEvents
+    .map((raw) => {
+      if (!raw) return null;
+      try {
+        return JSON.parse(raw);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+
+  // 從最後一次 replace checkpoint 開始重播，大幅加速讀取
+  let startIdx = 0;
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i].mode === "replace") {
+      startIdx = i;
+      break;
+    }
+  }
+
+  let state = {};
+  for (let i = startIdx; i < events.length; i++) {
+    const ev = events[i];
+    state = mergeIngestPayload(state, ev.payload || {}, ev.mode === "replace" ? "replace" : "merge");
+  }
+
+  const latest = events[events.length - 1];
+  return {
+    revision: events.length,
+    updatedAt: latest?.createdAt || null,
+    snapshotId: latest?.snapshotId || null,
+    payload: state,
+  };
+}
 
 /**
  * 常數時間字串比對，防範時序旁路攻擊 (Timing Attack)
@@ -341,21 +517,24 @@ export function mergeIngestPayload(existingPayload = {}, incomingRaw = {}, mode 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    const origin = request.headers.get("Origin") || "*";
+    const requestOrigin = request.headers.get("Origin");
+    const allowedOrigin = resolveAllowedCorsOrigin(requestOrigin, env);
     const apiType = url.searchParams.get("api");
     const rawFlightNo = url.searchParams.get("flight");
 
-    // 嚴格 CORS 標頭控制
+    // 嚴格 CORS 標頭控制（依據 ALLOWED_ORIGINS 白名單，不反射任意惡意來源）
     const corsHeaders = {
-      "Access-Control-Allow-Origin": origin,
+      "Access-Control-Allow-Origin": allowedOrigin,
+      "Vary": "Origin",
       "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key, X-Share-Token",
-      "X-Content-Type-Options": "nosniff"
+      "X-Content-Type-Options": "nosniff",
+      "Cache-Control": "no-store"
     };
 
     // CORS 預檢
     if (request.method === "OPTIONS") {
-      return new Response(null, { headers: corsHeaders });
+      return new Response(null, { status: 204, headers: corsHeaders });
     }
 
     const json = (data, status = 200) =>
@@ -372,9 +551,11 @@ export default {
 
       const auth = await authenticateApiRequest(request, env);
       if (!auth.ok) {
+        auditLog("auth_failed", { path: url.pathname, method: request.method, status: auth.status });
         return json({ error: auth.error }, auth.status);
       }
       if (auth.role !== "admin") {
+        auditLog("authz_denied", { path: url.pathname, method: request.method, keyId: auth.keyId, label: auth.label });
         return json({ error: "權限不足 (403 Forbidden)：僅限 Master Admin Token 可管理或簽發子金鑰" }, 403);
       }
 
@@ -444,6 +625,7 @@ export default {
         };
         registry.push(newEntry);
         await saveSubKeysRegistry(env.SHARED_TRIPS, registry);
+        auditLog("subkey_created", { keyId: id, label, permissions, allowedChannels, expiresAt });
 
         return json({
           success: true,
@@ -482,6 +664,7 @@ export default {
           return json({ error: `找不到指定的子金鑰 (${keyId})` }, 404);
         }
         await saveSubKeysRegistry(env.SHARED_TRIPS, nextRegistry);
+        auditLog("subkey_revoked", { revokedId: keyId, remainingCount: nextRegistry.length });
         return json({ success: true, revokedId: keyId, remainingCount: nextRegistry.length });
       }
 
@@ -496,22 +679,23 @@ export default {
 
       const auth = await authenticateApiRequest(request, env);
       if (!auth.ok) {
+        auditLog("auth_failed", { path: url.pathname, method: request.method, status: auth.status });
         return json({ error: auth.error }, auth.status);
       }
 
       const queryChannel = url.searchParams.get("channel");
 
-      // 1. GET /api/v1/ingest — 讀取雲端通道目前資料 (供前端自動拉取或外部查詢)
+      // 1. GET /api/v1/ingest — 讀取並重播雲端 Append-Only Inbox 通道最新資料
       if (request.method === "GET") {
         const channel = sanitizeChannel(queryChannel);
         const access = checkKeyAuthorization(auth, "read", channel);
         if (!access.allowed) {
+          auditLog("authz_denied", { path: url.pathname, method: "GET", channel, keyId: auth.keyId });
           return json({ error: access.error }, access.status);
         }
-        const kvKey = `api_sync:${channel}`;
-        const rawStored = await env.SHARED_TRIPS.get(kvKey);
 
-        if (!rawStored) {
+        const replayed = await replayChannelInbox(env.SHARED_TRIPS, channel);
+        if (!replayed.payload || replayed.revision === 0) {
           return json({
             success: true,
             channel,
@@ -522,14 +706,7 @@ export default {
           });
         }
 
-        let storedObj;
-        try {
-          storedObj = JSON.parse(rawStored);
-        } catch {
-          return json({ error: "雲端通道資料損毀" }, 500);
-        }
-
-        const currentRevision = Number(storedObj.revision) || 1;
+        const currentRevision = replayed.revision;
         const sinceRevParam = url.searchParams.get("sinceRevision");
         const sinceRevision = sinceRevParam !== null && sinceRevParam !== "" ? Number(sinceRevParam) : -1;
 
@@ -538,8 +715,8 @@ export default {
             success: true,
             channel,
             revision: currentRevision,
-            updatedAt: storedObj.updatedAt || null,
-            snapshotId: storedObj.snapshotId || null,
+            updatedAt: replayed.updatedAt,
+            snapshotId: replayed.snapshotId,
             hasUpdate: false,
           });
         }
@@ -548,14 +725,14 @@ export default {
           success: true,
           channel,
           revision: currentRevision,
-          updatedAt: storedObj.updatedAt || null,
-          snapshotId: storedObj.snapshotId || null,
+          updatedAt: replayed.updatedAt,
+          snapshotId: replayed.snapshotId,
           hasUpdate: true,
-          data: storedObj.payload || storedObj,
+          data: replayed.payload,
         });
       }
 
-      // 2. POST / PUT /api/v1/ingest — 外部寫入資料 (支援單筆追加 merge 或整包覆寫 replace)
+      // 2. POST / PUT /api/v1/ingest — Append-Only Inbox 寫入 (消除 KV 併發 Lost Update)
       if (request.method === "POST" || request.method === "PUT") {
         const contentLength = parseInt(request.headers.get("content-length") || "0", 10);
         if (contentLength > MAX_PAYLOAD_BYTES) {
@@ -581,58 +758,56 @@ export default {
         const channel = sanitizeChannel(normalizedInput.channel || queryChannel);
         const access = checkKeyAuthorization(auth, "write", channel);
         if (!access.allowed) {
+          auditLog("authz_denied", { path: url.pathname, method: request.method, channel, keyId: auth.keyId });
           return json({ error: access.error }, access.status);
         }
         const mode = (normalizedInput.mode || url.searchParams.get("mode") || (request.method === "PUT" ? "replace" : "merge")) === "replace"
           ? "replace"
           : "merge";
+        const shouldCreateSnapshot =
+          url.searchParams.get("createSnapshot") === "true" || normalizedInput.createSnapshot === true;
 
-        const kvKey = `api_sync:${channel}`;
-        let existingRecord = { revision: 0, payload: {} };
-
-        if (mode === "merge") {
-          const rawExisting = await env.SHARED_TRIPS.get(kvKey);
-          if (rawExisting) {
-            try {
-              const parsedExisting = JSON.parse(rawExisting);
-              existingRecord = {
-                revision: Number(parsedExisting.revision) || 0,
-                payload: parsedExisting.payload || parsedExisting || {},
-              };
-            } catch {
-              existingRecord = { revision: 0, payload: {} };
-            }
-          }
-        } else {
-          const rawExisting = await env.SHARED_TRIPS.get(kvKey);
-          if (rawExisting) {
-            try {
-              const parsedExisting = JSON.parse(rawExisting);
-              existingRecord.revision = Number(parsedExisting.revision) || 0;
-            } catch {
-              existingRecord.revision = 0;
-            }
-          }
-        }
-
-        const mergedPayload = mergeIngestPayload(existingRecord.payload, normalizedInput, mode);
-        const nextRevision = existingRecord.revision + 1;
+        const eventId = uuid();
         const updatedAt = new Date().toISOString();
-        const snapshotId = uuid();
+        const paddedTs = String(Date.now()).padStart(15, "0");
+        const snapshotId = shouldCreateSnapshot ? uuid() : null;
 
-        const recordToSave = {
+        // 每個寫入事件寫入獨立 KV Key，完全避免併發 Read-Modify-Write 覆蓋
+        const inboxEventKey = `api_inbox:${channel}:${paddedTs}_${eventId}`;
+        const eventRecord = {
+          id: eventId,
           channel,
-          revision: nextRevision,
-          updatedAt,
+          mode,
+          createdAt: updatedAt,
+          author: auth.label || auth.keyId,
           snapshotId,
-          payload: mergedPayload,
+          payload: normalizedInput,
         };
 
-        // 寫入雲端同步通道 + 同時產生一鍵匯入快照 UUID
-        await Promise.all([
-          env.SHARED_TRIPS.put(kvKey, JSON.stringify(recordToSave), { expirationTtl: API_KV_TTL_SECONDS }),
-          env.SHARED_TRIPS.put(snapshotId, JSON.stringify(mergedPayload), { expirationTtl: 60 * 60 * 24 * 30 }),
-        ]);
+        await env.SHARED_TRIPS.put(inboxEventKey, JSON.stringify(eventRecord), {
+          expirationTtl: API_KV_TTL_SECONDS,
+        });
+
+        // 重播目前通道狀態以計算回傳摘要與版本號
+        const replayed = await replayChannelInbox(env.SHARED_TRIPS, channel);
+        const mergedPayload = replayed.payload || mergeIngestPayload({}, normalizedInput, mode);
+        const nextRevision = replayed.revision || 1;
+
+        // 僅於明確要求 ?createSnapshot=true 時才建立無認證 30 天分享快照，避免機敏資料隱性暴露
+        if (shouldCreateSnapshot && snapshotId) {
+          await env.SHARED_TRIPS.put(snapshotId, JSON.stringify(mergedPayload), {
+            expirationTtl: 60 * 60 * 24 * 30,
+          });
+        }
+
+        auditLog("ingest_write", {
+          channel,
+          mode,
+          revision: nextRevision,
+          keyId: auth.keyId,
+          author: auth.label,
+          createdSnapshot: Boolean(snapshotId),
+        });
 
         return json({
           success: true,
@@ -640,9 +815,13 @@ export default {
           mode,
           revision: nextRevision,
           updatedAt,
-          snapshotId,
-          magicImportQuery: `?magic=${snapshotId}`,
-          shareViewQuery: `?view=${snapshotId}`,
+          ...(snapshotId
+            ? {
+                snapshotId,
+                magicImportQuery: `?magic=${snapshotId}`,
+                shareViewQuery: `?view=${snapshotId}`,
+              }
+            : {}),
           summary: {
             tickets: mergedPayload.tickets?.length || 0,
             hotels: mergedPayload.hotels?.length || 0,
@@ -657,19 +836,36 @@ export default {
         });
       }
 
-      // 3. DELETE /api/v1/ingest — 清空指定雲端同步通道
+      // 3. DELETE /api/v1/ingest — 清空指定雲端同步通道 (含所有 Inbox 事件與舊版鍵)
       if (request.method === "DELETE") {
         const channel = sanitizeChannel(queryChannel);
         const access = checkKeyAuthorization(auth, "delete", channel);
         if (!access.allowed) {
+          auditLog("authz_denied", { path: url.pathname, method: "DELETE", channel, keyId: auth.keyId });
           return json({ error: access.error }, access.status);
         }
-        const kvKey = `api_sync:${channel}`;
-        await env.SHARED_TRIPS.delete(kvKey);
+
+        const keysToDelete = [`api_sync:${channel}`];
+        if (typeof env.SHARED_TRIPS.list === "function") {
+          const inboxPrefix = `api_inbox:${channel}:`;
+          let cursor;
+          do {
+            const page = await env.SHARED_TRIPS.list({ prefix: inboxPrefix, cursor });
+            if (Array.isArray(page?.keys)) {
+              keysToDelete.push(...page.keys.map((k) => k.name));
+            }
+            cursor = page?.list_complete ? undefined : page?.cursor;
+          } while (cursor);
+        }
+
+        await Promise.all(keysToDelete.map((k) => env.SHARED_TRIPS.delete(k)));
+        auditLog("ingest_cleared", { channel, deletedKeys: keysToDelete.length, keyId: auth.keyId });
+
         return json({
           success: true,
           channel,
           cleared: true,
+          deletedEventsCount: Math.max(0, keysToDelete.length - 1),
         });
       }
 
@@ -682,12 +878,11 @@ export default {
         return json({ error: "KV namespace SHARED_TRIPS 未綁定" }, 500);
       }
 
-      // 1. 驗證 Authorization (若 Worker 配置了 SHARE_SECRET_TOKEN)
+      // 1. 驗證 Authorization (若 Worker 配置了 SHARE_SECRET_TOKEN，採常數時間比對)
       if (env.SHARE_SECRET_TOKEN) {
-        const authHeader = request.headers.get("Authorization") || "";
-        const customToken = request.headers.get("X-Share-Token") || "";
-        const token = authHeader.replace(/^Bearer\s+/i, "") || customToken;
-        if (token !== env.SHARE_SECRET_TOKEN) {
+        const token = extractAuthToken(request);
+        if (!token || !timingSafeEqualStr(token, env.SHARE_SECRET_TOKEN)) {
+          auditLog("share_auth_failed", { path: "/share" });
           return json({ error: "未授權存取：缺少有效的分享金鑰" }, 401);
         }
       }
@@ -736,46 +931,50 @@ export default {
       });
     }
 
-    // ── 功能一：短網址邊緣還原代理 ──────────────────────────────────────────
+    // ── 功能一：短網址邊緣還原代理 (逐跳手動驗證防範 302 SSRF 繞過) ──────────
     if (apiType === 'unshorten') {
       const targetUrl = url.searchParams.get('url');
       if (!targetUrl) {
         return json({ error: "缺少必要的 'url' 參數" }, 400);
       }
 
-      // SSRF 防護：驗證協議與禁止存取內網/私有 IP
+      let currentUrl = targetUrl;
       try {
-        const parsed = new URL(targetUrl);
-        if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-          return json({ error: "不支援的協議，僅允許 HTTP/HTTPS" }, 400);
-        }
-        const hostname = parsed.hostname.toLowerCase();
-        if (
-          hostname === 'localhost' ||
-          hostname.endsWith('.localhost') ||
-          hostname === '127.0.0.1' ||
-          hostname === '::1' ||
-          hostname === '0.0.0.0' ||
-          hostname.startsWith('169.254.') ||
-          hostname.startsWith('10.') ||
-          hostname.startsWith('192.168.') ||
-          /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(hostname)
-        ) {
-          return json({ error: "禁止存取本機、內網或私有 IP 網址" }, 403);
-        }
-      } catch (_) {
-        return json({ error: "無效的 URL 格式" }, 400);
-      }
+        for (let hop = 0; hop <= MAX_REDIRECT_HOPS; hop++) {
+          const check = validateSafePublicUrl(currentUrl);
+          if (!check.safe) {
+            auditLog("ssrf_blocked", { hop, reason: check.error });
+            return json({ error: check.error }, check.status);
+          }
 
-      try {
-        const resp = await fetch(targetUrl, { redirect: "follow" });
-        return json({ success: true, resolvedUrl: resp.url });
+          const resp = await fetchWithTimeout(check.url, { redirect: "manual" }, UPSTREAM_TIMEOUT_MS);
+          if (resp.status >= 300 && resp.status < 400) {
+            const location = resp.headers.get("Location");
+            if (!location) {
+              return json({ success: true, resolvedUrl: check.url });
+            }
+            // 解析相對或絕對轉址目標，並於下一跳重新驗證 SSRF
+            currentUrl = new URL(location, check.url).toString();
+            continue;
+          }
+          return json({ success: true, resolvedUrl: resp.url || check.url });
+        }
+        return json({ error: "轉址次數過多，已中止還原" }, 400);
       } catch (error) {
         return json({ error: error.message }, 500);
       }
     }
 
-    // ── 功能二：航班 API 代理 (強制走 HTTPS 與參數 URL 編碼) ──────────────────
+    // ── 功能二：航班 API 代理 (強制走 HTTPS、逾時控制與參數 URL 編碼) ──────────
+    // 若 Worker 啟用 REQUIRE_PROXY_AUTH="true"，強制驗證 API 金鑰防止第三方盜用付費額度
+    if (env.REQUIRE_PROXY_AUTH === "true") {
+      const proxyAuth = await authenticateApiRequest(request, env);
+      if (!proxyAuth.ok) {
+        auditLog("proxy_auth_failed", { apiType, status: proxyAuth.status });
+        return json({ error: proxyAuth.error }, proxyAuth.status);
+      }
+    }
+
     if (!rawFlightNo) {
       return json({ error: "缺少必要的 'api' 或 'flight' 參數" }, 400);
     }
@@ -796,7 +995,7 @@ export default {
         return json({ error: "參數 'api' 無效。請使用 'unshorten'、'aviationstack' 或 'airlabs'" }, 400);
       }
 
-      const response = await fetch(targetUrl);
+      const response = await fetchWithTimeout(targetUrl, {}, UPSTREAM_TIMEOUT_MS);
       const data = await response.json();
       return new Response(JSON.stringify(data), {
         status: response.status,

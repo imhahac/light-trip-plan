@@ -11,6 +11,7 @@ import {
     useOverrideDataContext,
 } from './contexts/DataContext';
 import { downloadDiagnosticDump } from './utils/diagnosticDump';
+import { logger } from './utils/logger';
 import {
     getStoredApiSyncConfig,
     getLastSyncedRevision,
@@ -156,8 +157,13 @@ function AppContent() {
                 setLastSyncedRevision(cfg.channel, res.revision);
                 await refreshTrips(importRes.targetTripId || activeTrip?.id || null);
                 toast.success(`🔄 已自動從 API 通道 (${cfg.channel}) 同步最新寫入資料 (版本 #${res.revision})`);
-            } catch {
-                // 背景自動拉取若失敗不打斷使用者操作
+            } catch (err) {
+                logger.warn('[AutoPull] Failed to sync from ingest API:', err?.message || err);
+                if (err?.message && (err.message.includes('401') || err.message.includes('403') || err.message.includes('過期') || err.message.includes('撤銷'))) {
+                    toast.warning('API 自動同步認證失敗', {
+                        description: '您的同步金鑰可能已過期或被撤銷，請至「匯入匯出 ➔ API 寫入接口」檢查設定。',
+                    });
+                }
             }
         })();
     }, [

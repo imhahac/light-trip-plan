@@ -558,27 +558,39 @@ export default function CostManager() {
         }
 
         const frozen = await freezeExchangeRate(amt, formCurrency, baseCurrency);
+        // 支援二位小數幣別 (USD/EUR/GBP/SGD/AUD/CAD) 以整數分 (cents) 精準分攤，避免四捨五入誤差
+        const DECIMAL_CURRENCIES = new Set(['USD', 'EUR', 'GBP', 'SGD', 'AUD', 'CAD', 'HKD', 'CNY', 'THB']);
+        const scale = DECIMAL_CURRENCIES.has(baseCurrency) ? 100 : 1;
+        const scaledTotal = Math.round(frozen.baseAmount * scale);
 
         if (splitMode === 'equal') {
-            calculatedShares = splitEqual(frozen.baseAmount, participants);
+            const rawShares = splitEqual(scaledTotal, participants);
+            Object.entries(rawShares).forEach(([p, val]) => {
+                calculatedShares[p] = scale === 1 ? val : val / scale;
+            });
         } else if (splitMode === 'ratio') {
             const weights = {};
             participants.forEach(p => { weights[p] = Number(memberWeights[p]) || 1; });
-            calculatedShares = splitByWeights(frozen.baseAmount, weights);
+            const rawShares = splitByWeights(scaledTotal, weights);
+            Object.entries(rawShares).forEach(([p, val]) => {
+                calculatedShares[p] = scale === 1 ? val : val / scale;
+            });
         } else if (splitMode === 'exact') {
             let exactSum = 0;
             participants.forEach(p => {
-                const val = Math.round(Number(memberExactAmounts[p]) || 0);
+                const val = scale === 1
+                    ? Math.round(Number(memberExactAmounts[p]) || 0)
+                    : Math.round((Number(memberExactAmounts[p]) || 0) * scale) / scale;
                 calculatedShares[p] = val;
                 exactSum += val;
             });
-            if (Math.abs(exactSum - Math.round(frozen.baseAmount)) > 1) {
-                toast.error(`自訂分攤金額總和 ($${exactSum}) 與支出總額 ($${Math.round(frozen.baseAmount)}) 不符，請確認！`);
+            if (Math.abs(exactSum - (scaledTotal / scale)) > (scale === 1 ? 1 : 0.02)) {
+                toast.error(`自訂分攤金額總和 ($${exactSum}) 與支出總額 ($${scaledTotal / scale}) 不符，請確認！`);
                 return;
             }
         } else if (splitMode === 'personal') {
             const payer = formPaidBy.trim() || '我';
-            calculatedShares = { [payer]: Math.round(frozen.baseAmount) };
+            calculatedShares = { [payer]: scaledTotal / scale };
         }
 
         const expenseId = editingExpense?.id || `exp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
@@ -697,13 +709,14 @@ export default function CostManager() {
         }
     };
 
-    // ── 一鍵結清所有債務 ──────────────────────────────────────────────────
+    // ── 一鍵結清所有債務 (改採單一 IndexedDB saveBatch 原子交易) ─────────────
     const handleSettleAll = async () => {
         if (confirm('確定要將當前所有未結清支出標記為已結清嗎？')) {
-            for (const exp of customExpenses) {
-                if (!exp.settled) {
-                    await expenseRepo.save({ ...exp, settled: true });
-                }
+            const unsettled = customExpenses
+                .filter((exp) => !exp.settled)
+                .map((exp) => ({ ...exp, settled: true }));
+            if (unsettled.length > 0) {
+                await expenseRepo.saveBatch(unsettled);
             }
             await loadCustomExpenses();
             toast.success('🎉 所有帳目已完成結清！');

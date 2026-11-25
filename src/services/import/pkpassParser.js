@@ -5,8 +5,14 @@
 
 import { logger } from '../../utils/logger';
 
+const MAX_PKPASS_FILE_BYTES = 10 * 1024 * 1024; // 10 MB 檔案上限
+const MAX_PASS_JSON_CHARS = 1 * 1024 * 1024;    // 1 MB 解壓後 pass.json 上限（防範 Zip Bomb）
+
 export async function parsePKPass(file) {
     try {
+        if (file && typeof file.size === 'number' && file.size > MAX_PKPASS_FILE_BYTES) {
+            throw new Error('pkpass 檔案過大（上限 10MB）');
+        }
         const JSZip = (await import('jszip')).default;
         const zip = await JSZip.loadAsync(file);
 
@@ -16,6 +22,9 @@ export async function parsePKPass(file) {
         }
 
         const passJsonText = await passJsonFile.async('text');
+        if (passJsonText.length > MAX_PASS_JSON_CHARS) {
+            throw new Error('pass.json 解壓後超過安全大小上限（1MB）');
+        }
         const pass = JSON.parse(passJsonText);
 
         const orgName = pass.organizationName || pass.logoText || '票券';

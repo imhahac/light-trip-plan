@@ -1,4 +1,5 @@
 import { logger } from '../logger';
+import { exportAllIndexedDBData, restoreAllIndexedDBData } from '../../services/db';
 
 async function findDriveFile(accessToken) {
     const query = encodeURIComponent(`name="reverse-tickets.json" and trashed=false`);
@@ -31,7 +32,18 @@ export const syncToDrive = async (tickets, tripLabels, hotels = [], accessToken,
         const files = findRes.files;
         const existingFile = files.length > 0 ? files[0] : null;
 
-        const fileContent = { tickets, tripLabels, hotels, activities, tripBudgets, tripOverrides };
+        // 同步納入 IndexedDB 全部核心旅程 Stores（trips/dayPlans/placeItems/reservations/expenses/packingItems/todos）
+        const trekData = await exportAllIndexedDBData().catch(() => null);
+        const fileContent = {
+            schemaVersion: 2,
+            tickets,
+            tripLabels,
+            hotels,
+            activities,
+            tripBudgets,
+            tripOverrides,
+            ...(trekData ? { trekData } : {}),
+        };
 
         let uploadUrl = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=media';
         let method = 'POST';
@@ -124,6 +136,12 @@ export const loadFromDrive = async (accessToken) => {
             tripOverrides = (data.tripOverrides && typeof data.tripOverrides === 'object') ? data.tripOverrides : {};
         } else {
             throw new Error('雲端檔案內容格式毀損或不相容');
+        }
+
+        if (data && typeof data === 'object' && data.trekData && typeof data.trekData === 'object') {
+            await restoreAllIndexedDBData(data.trekData).catch((err) => {
+                logger.warn('Failed to restore IndexedDB trekData from Drive backup:', err);
+            });
         }
 
         return { success: true, tickets, tripLabels, hotels, activities, tripBudgets, tripOverrides, foundFilesLog: allFoundFiles };

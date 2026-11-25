@@ -4,7 +4,7 @@
  */
 
 export const DB_NAME = 'treklite_db';
-export const DB_VERSION = 1;
+export const DB_VERSION = 2;
 
 export const STORES = {
     TRIPS: 'trips',
@@ -17,7 +17,11 @@ export const STORES = {
     TODOS: 'todos',
     ATTACHED_FILES: 'attachedFiles',
     APP_SETTINGS: 'appSettings',
-    BACKUPS: 'backups'
+    BACKUPS: 'backups',
+    // v2 單軌收斂：將原 localStorage 票券／住宿／活動同步納管至 IndexedDB
+    TICKETS: 'tickets',
+    HOTELS: 'hotels',
+    ACTIVITIES: 'activities',
 };
 
 export function setupIndexedDBSchema(db) {
@@ -97,5 +101,23 @@ export function setupIndexedDBSchema(db) {
     if (!db.objectStoreNames.contains(STORES.BACKUPS)) {
         const store = db.createObjectStore(STORES.BACKUPS, { keyPath: 'id' });
         store.createIndex('createdAt', 'createdAt', { unique: false });
+    }
+
+    // 12. Tickets (v2 單軌整合)
+    if (!db.objectStoreNames.contains(STORES.TICKETS)) {
+        const store = db.createObjectStore(STORES.TICKETS, { keyPath: 'id' });
+        store.createIndex('outboundDate', 'outboundDate', { unique: false });
+    }
+
+    // 13. Hotels (v2 單軌整合)
+    if (!db.objectStoreNames.contains(STORES.HOTELS)) {
+        const store = db.createObjectStore(STORES.HOTELS, { keyPath: 'id' });
+        store.createIndex('checkIn', 'checkIn', { unique: false });
+    }
+
+    // 14. Activities (v2 單軌整合)
+    if (!db.objectStoreNames.contains(STORES.ACTIVITIES)) {
+        const store = db.createObjectStore(STORES.ACTIVITIES, { keyPath: 'id' });
+        store.createIndex('startDate', 'startDate', { unique: false });
     }
 }

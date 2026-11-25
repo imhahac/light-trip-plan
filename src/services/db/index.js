@@ -21,6 +21,78 @@ export async function getDB() {
     return dbPromise;
 }
 
+/**
+ * 安全關閉現有 IndexedDB 連線並等待資料庫徹底刪除（供 ErrorBoundary 自癒重設使用，避免 onblocked）
+ */
+export async function closeAndDeleteDB() {
+    try {
+        if (dbPromise) {
+            const db = await dbPromise.catch(() => null);
+            if (db && typeof db.close === 'function') {
+                db.close();
+            }
+            dbPromise = null;
+        }
+    } catch {
+        dbPromise = null;
+    }
+
+    if (typeof window === 'undefined' || !window.indexedDB) return true;
+    return new Promise((resolve) => {
+        const req = window.indexedDB.deleteDatabase(DB_NAME);
+        req.onsuccess = () => resolve(true);
+        req.onerror = () => resolve(false);
+        req.onblocked = () => resolve(false);
+    });
+}
+
+const SYNCABLE_IDB_STORES = [
+    STORES.TRIPS,
+    STORES.DAY_PLANS,
+    STORES.PLACE_ITEMS,
+    STORES.DAY_NOTES,
+    STORES.RESERVATIONS,
+    STORES.EXPENSES,
+    STORES.PACKING_ITEMS,
+    STORES.TODOS,
+    STORES.ATTACHED_FILES,
+];
+
+/**
+ * 匯出所有 IndexedDB 核心旅程 Stores（供 Google Drive 完整備份使用）
+ */
+export async function exportAllIndexedDBData() {
+    const db = await getDB();
+    const bundle = {};
+    for (const storeName of SYNCABLE_IDB_STORES) {
+        bundle[storeName] = await db.getAll(storeName).catch(() => []);
+    }
+    return bundle;
+}
+
+/**
+ * 在單一跨 Store 原子交易中還原所有 IndexedDB 核心旅程資料
+ */
+export async function restoreAllIndexedDBData(bundle) {
+    if (!bundle || typeof bundle !== 'object') return false;
+    const db = await getDB();
+    const targetStores = SYNCABLE_IDB_STORES.filter((s) => Array.isArray(bundle[s]));
+    if (targetStores.length === 0) return false;
+
+    const tx = db.transaction(targetStores, 'readwrite');
+    for (const storeName of targetStores) {
+        const store = tx.objectStore(storeName);
+        await store.clear();
+        for (const item of bundle[storeName]) {
+            if (item && item.id) {
+                await store.put(item);
+            }
+        }
+    }
+    await tx.done;
+    return true;
+}
+
 // ── Generic Store Operations ──────────────────────────────────────────
 
 async function getAll(storeName) {

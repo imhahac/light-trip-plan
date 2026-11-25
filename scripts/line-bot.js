@@ -1,7 +1,7 @@
 import { google } from 'googleapis';
-import axios from 'axios';
 import { format, addDays, parseISO } from 'date-fns';
 import { getFlightAwareUrl } from '../src/utils/flightUtils.js';
+import { isTripArchivedOrEnded } from '../src/services/trips/tripStatusService.js';
 
 /**
  * LINE Bot Cron Job v2
@@ -25,7 +25,7 @@ const isHomeAirport = (regionStr, originCode = null) => {
     return configuredHomes.some(code => upper.includes(code));
 };
 
-function getItinerary(tickets, hotels, activities = []) {
+function getItinerary(tickets, hotels, activities = [], trekTrips = [], targetDateStr = null) {
     // 1. 處理機票行程
     const segments = [];
     tickets.filter(t => t?.id).forEach(t => {
@@ -85,21 +85,31 @@ function getItinerary(tickets, hotels, activities = []) {
             return isMatch;
         });
 
+        const todayRef = targetDateStr || format(new Date(), 'yyyy-MM-dd');
+        const matchedTrekTrip = (Array.isArray(trekTrips) ? trekTrips : []).find(
+            (tt) => tt && tt.startDate && tt.endDate && start <= tt.endDate && end >= tt.startDate
+        );
+        const isArchivedOrEnded =
+            (end && end < todayRef) ||
+            Boolean(matchedTrekTrip && isTripArchivedOrEnded(matchedTrekTrip, todayRef));
+
         const warns = [];
-        let reqStart = start;
-        if (isHomeAirport(segs[0].from, trip.origin) && segs[0].arrivalDate && segs[0].arrivalDate > start) reqStart = segs[0].arrivalDate;
-        const tripDays = Math.ceil((new Date(end) - new Date(start)) / 86400000) + 1;
-        if (tripDays > 1 && tripHotels.length === 0) warns.push('⚠️ 此趟次尚未安排任何住宿');
-        const sortedH = [...tripHotels].sort((a, b) => a.checkIn.localeCompare(b.checkIn));
-        for (let i = 0; i < sortedH.length - 1; i++) {
-            if (sortedH[i+1].checkIn < sortedH[i].checkOut) warns.push(`⚠️ 住宿重疊：「${sortedH[i].name}」與「${sortedH[i+1].name}」`);
-            else if (sortedH[i+1].checkIn > sortedH[i].checkOut) warns.push(`⚠️ 住宿缺口：${sortedH[i].checkOut} 到 ${sortedH[i+1].checkIn} 之間無住宿`);
+        if (!isArchivedOrEnded) {
+            let reqStart = start;
+            if (isHomeAirport(segs[0].from, trip.origin) && segs[0].arrivalDate && segs[0].arrivalDate > start) reqStart = segs[0].arrivalDate;
+            const tripDays = Math.ceil((new Date(end) - new Date(start)) / 86400000) + 1;
+            if (tripDays > 1 && tripHotels.length === 0) warns.push('⚠️ 此趟次尚未安排任何住宿');
+            const sortedH = [...tripHotels].sort((a, b) => a.checkIn.localeCompare(b.checkIn));
+            for (let i = 0; i < sortedH.length - 1; i++) {
+                if (sortedH[i+1].checkIn < sortedH[i].checkOut) warns.push(`⚠️ 住宿重疊：「${sortedH[i].name}」與「${sortedH[i+1].name}」`);
+                else if (sortedH[i+1].checkIn > sortedH[i].checkOut) warns.push(`⚠️ 住宿缺口：${sortedH[i].checkOut} 到 ${sortedH[i+1].checkIn} 之間無住宿`);
+            }
+            if (sortedH.length > 0) {
+                if (sortedH[0].checkIn > reqStart) warns.push(`⚠️ 住宿缺口：${reqStart} 到 ${sortedH[0].checkIn} 之間無住宿`);
+                if (sortedH[sortedH.length - 1].checkOut < end) warns.push(`⚠️ 住宿缺口：${sortedH[sortedH.length - 1].checkOut} 到 ${end} 之間無住宿`);
+            }
         }
-        if (sortedH.length > 0) {
-            if (sortedH[0].checkIn > reqStart) warns.push(`⚠️ 住宿缺口：${reqStart} 到 ${sortedH[0].checkIn} 之間無住宿`);
-            if (sortedH[sortedH.length - 1].checkOut < end) warns.push(`⚠️ 住宿缺口：${sortedH[sortedH.length - 1].checkOut} 到 ${end} 之間無住宿`);
-        }
-        return { ...trip, start, end, hotels: tripHotels, activities: tripActs, warnings: warns, isVirtual: false };
+        return { ...trip, start, end, hotels: tripHotels, activities: tripActs, warnings: warns, isArchived: isArchivedOrEnded, isVirtual: false };
     });
 
     const orphans = [
@@ -221,15 +231,17 @@ const run = async () => {
             });
         }
 
-        const allItineraries = getItinerary(tickets, hotels, activities);
-        
         const targetDate = process.env.TEST_DATE || format(new Date(), 'yyyy-MM-dd');
+        const trekTrips = Array.isArray(data?.trekData?.trips) ? data.trekData.trips : [];
+        const allItineraries = getItinerary(tickets, hotels, activities, trekTrips, targetDate);
+
         const d0 = targetDate;
         const d1 = format(addDays(parseISO(targetDate), 1), 'yyyy-MM-dd');
         const d3 = format(addDays(parseISO(targetDate), 3), 'yyyy-MM-dd');
         const d7_limit = format(addDays(parseISO(targetDate), 7), 'yyyy-MM-dd');
 
         const notifyTrips = allItineraries.filter(trip => {
+            if (trip.isArchived) return false;
             const isStartMatch = [d0, d1, d3].includes(trip.start);
             const isDangerNear = (trip.start >= d0 && trip.start <= d7_limit && trip.warnings?.length > 0);
             return isStartMatch || isDangerNear;
@@ -249,12 +261,16 @@ const run = async () => {
         const lineToken = process.env.LINE_CHANNEL_ACCESS_TOKEN;
         const lineUser = process.env.LINE_USER_ID;
         
-        // 分開傳送每一則訊息 (或組合在一起)
-        // 這裡採用分開傳送，讓每個行程獨立一則訊息以便閱讀
+        // 採用 Node.js 原生 fetch 推送（移除高風險 axios 相依）
         for (const msg of messages) {
-            await axios.post('https://api.line.me/v2/bot/message/push', { to: lineUser, messages: [msg] }, {
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${lineToken}` }
+            const pushRes = await fetch('https://api.line.me/v2/bot/message/push', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${lineToken}` },
+                body: JSON.stringify({ to: lineUser, messages: [msg] })
             });
+            if (!pushRes.ok) {
+                throw new Error(`LINE Push API failed (${pushRes.status}): ${await pushRes.text()}`);
+            }
         }
 
         console.log("✨ Text notifications sent successfully.");

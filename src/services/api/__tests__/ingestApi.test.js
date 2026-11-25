@@ -24,6 +24,13 @@ function createMockKV() {
         delete: vi.fn(async (key) => {
             store.delete(key);
         }),
+        list: vi.fn(async ({ prefix = '' } = {}) => ({
+            keys: [...store.keys()]
+                .filter((k) => k.startsWith(prefix))
+                .sort()
+                .map((name) => ({ name })),
+            list_complete: true,
+        })),
     };
 }
 
@@ -95,10 +102,10 @@ describe('Cloudflare Worker /api/v1/ingest 認證寫入與前端同步測試', (
         expect(body1.revision).toBe(1);
         expect(body1.summary.tickets).toBe(1);
         expect(body1.summary.hotels).toBe(1);
-        expect(body1.magicImportQuery).toMatch(/^\?magic=/);
+        expect(body1.magicImportQuery).toBeUndefined();
 
-        // 2. 第二次寫入：使用 X-API-Key 追加單筆活動 (預設 mode=merge)
-        const req2 = new Request('https://worker.example.com/api/v1/ingest?channel=tokyo2026', {
+        // 2. 第二次寫入：使用 X-API-Key 追加單筆活動 (預設 mode=merge)，並顯式要求 createSnapshot=true
+        const req2 = new Request('https://worker.example.com/api/v1/ingest?channel=tokyo2026&createSnapshot=true', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -121,6 +128,7 @@ describe('Cloudflare Worker /api/v1/ingest 認證寫入與前端同步測試', (
         expect(body2.summary.tickets).toBe(1);
         expect(body2.summary.hotels).toBe(1);
         expect(body2.summary.activities).toBe(1);
+        expect(body2.magicImportQuery).toMatch(/^\?magic=/);
 
         // 3. 讀取通道 (sinceRevision=1 應回傳 hasUpdate: true 與完整 payload)
         const reqGetUpdate = new Request(
@@ -304,6 +312,77 @@ describe('Cloudflare Worker /api/v1/ingest 認證寫入與前端同步測試', (
                     channel: 'tokyo2026',
                 })
             ).rejects.toThrow(/401|無效或已撤銷/);
+        } finally {
+            globalThis.fetch = originalFetch;
+        }
+    });
+
+    it('Append-Only Inbox 併發寫入 (Promise.all) 不會發生 Lost Update', async () => {
+        const reqA = new Request('https://worker.example.com/api/v1/ingest?channel=concurrent', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer my-super-secret-token-2026',
+            },
+            body: JSON.stringify({ activity: { id: 'act-a', title: '併發活動 A', startDate: '2026-12-24' } }),
+        });
+        const reqB = new Request('https://worker.example.com/api/v1/ingest?channel=concurrent', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer my-super-secret-token-2026',
+            },
+            body: JSON.stringify({ activity: { id: 'act-b', title: '併發活動 B', startDate: '2026-12-25' } }),
+        });
+
+        const [resA, resB] = await Promise.all([worker.fetch(reqA, env), worker.fetch(reqB, env)]);
+        expect(resA.status).toBe(200);
+        expect(resB.status).toBe(200);
+
+        const resGet = await worker.fetch(
+            new Request('https://worker.example.com/api/v1/ingest?channel=concurrent&sinceRevision=0', {
+                method: 'GET',
+                headers: { 'Authorization': 'Bearer my-super-secret-token-2026' },
+            }),
+            env
+        );
+        const body = await resGet.json();
+        expect(body.revision).toBe(2);
+        const ids = body.data.activities.map((a) => a.id).sort();
+        expect(ids).toEqual(['act-a', 'act-b']);
+    });
+
+    it('CORS 白名單 (ALLOWED_ORIGINS) 應拒絕未授權 Origin 並放行合法 Origin', async () => {
+        const evilReq = new Request('https://worker.example.com/api/v1/ingest?channel=default', {
+            method: 'OPTIONS',
+            headers: { Origin: 'https://evil.example.com' },
+        });
+        const evilRes = await worker.fetch(evilReq, env);
+        expect(evilRes.headers.get('Access-Control-Allow-Origin')).toBe('null');
+
+        const okReq = new Request('https://worker.example.com/api/v1/ingest?channel=default', {
+            method: 'OPTIONS',
+            headers: { Origin: 'https://imhahac.github.io' },
+        });
+        const okRes = await worker.fetch(okReq, env);
+        expect(okRes.headers.get('Access-Control-Allow-Origin')).toBe('https://imhahac.github.io');
+    });
+
+    it('?api=unshorten 遇到 302 轉址至內網/Metadata IP 時應回傳 403 SSRF 防護', async () => {
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = vi.fn(async () => new Response(null, {
+            status: 302,
+            headers: { Location: 'http://169.254.169.254/latest/meta-data/' },
+        }));
+        try {
+            const req = new Request(
+                'https://worker.example.com/?api=unshorten&url=' + encodeURIComponent('https://maps.app.goo.gl/fake'),
+                { method: 'GET' }
+            );
+            const res = await worker.fetch(req, env);
+            expect(res.status).toBe(403);
+            const data = await res.json();
+            expect(data.error).toMatch(/禁止存取|內網|Metadata|私有/i);
         } finally {
             globalThis.fetch = originalFetch;
         }

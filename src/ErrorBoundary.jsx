@@ -1,7 +1,7 @@
 import React from 'react';
 import { logger } from './utils/logger';
 import { downloadDiagnosticDump } from './utils/diagnosticDump';
-import { DB_NAME } from './services/db';
+import { closeAndDeleteDB } from './services/db';
 
 export class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -23,9 +23,7 @@ export class ErrorBoundary extends React.Component {
       try {
         localStorage.clear();
         sessionStorage.clear();
-        if (typeof window !== 'undefined' && window.indexedDB) {
-          window.indexedDB.deleteDatabase(DB_NAME);
-        }
+        await closeAndDeleteDB();
       } catch (err) {
         logger.error('Failed to clean local storage/database:', err);
       }

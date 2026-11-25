@@ -10,20 +10,50 @@
  * 向上 export：{ accessToken, accessTokenState, login, logout, trySilentRefresh }
  * isSyncing 由 useGoogleSync 自己管理，不在此 hook 中。
  */
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useState, useCallback } from 'react';
 import { toast } from 'sonner';
 import { useGoogleLogin, googleLogout } from '@react-oauth/google';
-import { useLocalStorage } from './useLocalStorage';
 import { logger } from '../utils/logger';
 import { TIMING } from '../constants/timing';
-import { ERRORS } from '../constants/errors';
 import { STORAGE_KEYS } from '../constants/storageKeys';
 
 const GOOGLE_SCOPE = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/calendar.events';
 
+function readSessionToken(key) {
+    if (typeof window === 'undefined') return null;
+    try {
+        // 安全性遷移：若舊版 localStorage 仍殘留 Google Token，自動遷移至 sessionStorage 並清除 localStorage
+        const legacy = window.localStorage?.getItem(key);
+        if (legacy) {
+            window.sessionStorage?.setItem(key, legacy);
+            window.localStorage?.removeItem(key);
+        }
+        const raw = window.sessionStorage?.getItem(key);
+        if (!raw) return null;
+        return JSON.parse(raw);
+    } catch {
+        return null;
+    }
+}
+
 export function useGoogleAuth() {
-    // ── 持久化 token（向後相容舊版 string 格式）──────────────────────────────
-    const [accessTokenState, setAccessTokenState] = useLocalStorage(STORAGE_KEYS.GOOGLE_ACCESS_TOKEN, null);
+    // ── 改以 sessionStorage 保存 OAuth Token（關閉分頁即清除，降低跨 Session 竊取面）──
+    const [accessTokenState, setAccessTokenStateRaw] = useState(() =>
+        readSessionToken(STORAGE_KEYS.GOOGLE_ACCESS_TOKEN)
+    );
+    const setAccessTokenState = useCallback((value) => {
+        setAccessTokenStateRaw((prev) => {
+            const next = typeof value === 'function' ? value(prev) : value;
+            if (typeof window !== 'undefined' && window.sessionStorage) {
+                if (next === null || next === undefined) {
+                    window.sessionStorage.removeItem(STORAGE_KEYS.GOOGLE_ACCESS_TOKEN);
+                } else {
+                    window.sessionStorage.setItem(STORAGE_KEYS.GOOGLE_ACCESS_TOKEN, JSON.stringify(next));
+                }
+            }
+            return next;
+        });
+    }, []);
     // 舊版存純 string，新版存 { token, expiresAt }
     const accessToken = typeof accessTokenState === 'string'
         ? accessTokenState

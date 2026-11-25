@@ -133,7 +133,8 @@ export default function ExportImportModal({ isOpen, onClose }) {
     const [apiConfig, setApiConfig] = useState(() => getStoredApiSyncConfig());
     const [isSyncingApi, setIsSyncingApi] = useState(false);
 
-    // ── 子金鑰管理 (Sub-Key Management) 狀態 ──────────────────────────────
+    // ── 子金鑰管理 (Sub-Key Management) 狀態（Master Token 僅暫存於記憶體，絕不寫入 localStorage）──
+    const [masterAdminToken, setMasterAdminToken] = useState('');
     const [subKeys, setSubKeys] = useState([]);
     const [isLoadingSubKeys, setIsLoadingSubKeys] = useState(false);
     const [newKeyLabel, setNewKeyLabel] = useState('');
@@ -141,6 +142,14 @@ export default function ExportImportModal({ isOpen, onClose }) {
     const [newKeyChannels, setNewKeyChannels] = useState('*');
     const [newKeyExpiresDays, setNewKeyExpiresDays] = useState(0); // 0 = 永久
     const [newlyIssuedKey, setNewlyIssuedKey] = useState(null);
+
+    // 關閉視窗時強制清空記憶體中的 Master Admin Token 與一次性明文子金鑰
+    useEffect(() => {
+        if (!isOpen) {
+            setMasterAdminToken('');
+            setNewlyIssuedKey(null);
+        }
+    }, [isOpen]);
 
     useEffect(() => {
         setNewStartDate(activeTrip?.startDate || '');
@@ -415,8 +424,16 @@ export default function ExportImportModal({ isOpen, onClose }) {
 
         setIsShifting(true);
         try {
-            const res = await shiftTripDates(activeTrip.id, newStartDate);
-            toast.success(`🎉 旅程日期已成功平移 ${res.dayDiff > 0 ? `+${res.dayDiff}` : res.dayDiff} 天！已更新 ${res.shiftedPlansCount} 個日程與 ${res.shiftedReservationsCount} 筆預訂憑證。`);
+            const res = await shiftTripDates(activeTrip.id, newStartDate, {
+                tickets,
+                hotels: rawHotels,
+                activities,
+                setTickets: ticketContext.setTickets,
+                setHotels: hotelContext.setHotels,
+                setActivities: activityContext.setActivities,
+            });
+            const extraCount = (res.shiftedTicketsCount || 0) + (res.shiftedHotelsCount || 0) + (res.shiftedActivitiesCount || 0);
+            toast.success(`🎉 旅程日期已成功平移 ${res.dayDiff > 0 ? `+${res.dayDiff}` : res.dayDiff} 天！已更新 ${res.shiftedPlansCount} 個日程、${res.shiftedReservationsCount} 筆預訂與 ${extraCount} 筆機酒活動。`);
             await refreshTrips(activeTrip.id);
             onClose();
         } catch (err) {
@@ -562,19 +579,18 @@ export default function ExportImportModal({ isOpen, onClose }) {
         }
     };
 
-    // ── 子金鑰簽發、查詢與撤銷操作 (需 Master Token) ────────────────────────
+    // ── 子金鑰簽發、查詢與撤銷操作 (強制使用記憶體暫存之 Master Token，不寫入 localStorage) ──
     const handleLoadSubKeys = async () => {
-        const saved = saveApiSyncConfig(apiConfig);
-        setApiConfig(saved);
-        if (!saved.apiToken) {
-            toast.error('請先於上方輸入 Master API Secret Token 才能管理子金鑰');
+        const token = masterAdminToken.trim();
+        if (!token) {
+            toast.error('請於下方「Master Admin Token」欄位輸入主管理金鑰（不會寫入 localStorage）');
             return;
         }
         setIsLoadingSubKeys(true);
         try {
             const list = await listSubKeys({
-                endpointUrl: saved.endpointUrl,
-                apiToken: saved.apiToken,
+                endpointUrl: apiConfig.endpointUrl,
+                apiToken: token,
             });
             setSubKeys(list);
             toast.success(`已載入 ${list.length} 組子金鑰`);
@@ -586,10 +602,9 @@ export default function ExportImportModal({ isOpen, onClose }) {
     };
 
     const handleCreateSubKey = async () => {
-        const saved = saveApiSyncConfig(apiConfig);
-        setApiConfig(saved);
-        if (!saved.apiToken) {
-            toast.error('請先於上方輸入 Master API Secret Token 才能簽發子金鑰');
+        const token = masterAdminToken.trim();
+        if (!token) {
+            toast.error('請先輸入 Master Admin Token 才能簽發子金鑰');
             return;
         }
         if (!newKeyLabel.trim()) {
@@ -612,8 +627,8 @@ export default function ExportImportModal({ isOpen, onClose }) {
         setIsLoadingSubKeys(true);
         try {
             const created = await createSubKey({
-                endpointUrl: saved.endpointUrl,
-                apiToken: saved.apiToken,
+                endpointUrl: apiConfig.endpointUrl,
+                apiToken: token,
                 label: newKeyLabel.trim(),
                 permissions,
                 allowedChannels: allowedChannels.length > 0 ? allowedChannels : ['*'],
@@ -622,8 +637,8 @@ export default function ExportImportModal({ isOpen, onClose }) {
             setNewlyIssuedKey(created);
             setNewKeyLabel('');
             const list = await listSubKeys({
-                endpointUrl: saved.endpointUrl,
-                apiToken: saved.apiToken,
+                endpointUrl: apiConfig.endpointUrl,
+                apiToken: token,
             });
             setSubKeys(list);
             toast.success(`🔑 已簽發子金鑰「${created.label}」！請立即複製保存`);
@@ -635,13 +650,16 @@ export default function ExportImportModal({ isOpen, onClose }) {
     };
 
     const handleRevokeSubKey = async (keyItem) => {
-        const saved = saveApiSyncConfig(apiConfig);
-        setApiConfig(saved);
+        const token = masterAdminToken.trim();
+        if (!token) {
+            toast.error('請先輸入 Master Admin Token 才能撤銷子金鑰');
+            return;
+        }
         setIsLoadingSubKeys(true);
         try {
             await revokeSubKey({
-                endpointUrl: saved.endpointUrl,
-                apiToken: saved.apiToken,
+                endpointUrl: apiConfig.endpointUrl,
+                apiToken: token,
                 keyId: keyItem.id,
             });
             setSubKeys((prev) => prev.filter((k) => k.id !== keyItem.id));
@@ -876,12 +894,12 @@ export default function ExportImportModal({ isOpen, onClose }) {
                                     </div>
 
                                     <div>
-                                        <label className="block text-[11px] font-bold text-slate-700 mb-1">API Secret Token (認證金鑰)</label>
+                                        <label className="block text-[11px] font-bold text-slate-700 mb-1">日常同步子金鑰 (建議使用受限 ltp_sk_...)</label>
                                         <input
                                             type="password"
                                             value={apiConfig.apiToken}
                                             onChange={(e) => setApiConfig((p) => ({ ...p, apiToken: e.target.value }))}
-                                            placeholder="對應 Worker 的 API_SECRET_TOKEN"
+                                            placeholder="建議填入唯讀或單通道子金鑰，勿存 Master Token"
                                             className="w-full border border-gray-300 rounded-xl px-3 py-2 text-xs font-mono focus:outline-none focus:border-indigo-500"
                                         />
                                     </div>
@@ -990,8 +1008,21 @@ export default function ExportImportModal({ isOpen, onClose }) {
                                     </div>
 
                                     <p className="text-[11px] text-slate-500 leading-relaxed">
-                                        上方填入您的 <b>Master Admin Token</b>（即 Worker 的 <code className="font-mono">API_SECRET_TOKEN</code>）後，即可在此簽發多組受限子金鑰（<code className="font-mono">ltp_sk_...</code>）。子金鑰在雲端僅儲存 SHA-256 雜湊值，可隨時單獨撤銷而不影響主金鑰。
+                                        為降低 XSS 外洩風險，<b>Master Admin Token 僅暫存於記憶體</b>（關閉視窗即自動清空，絕不寫入 <code className="font-mono">localStorage</code>）。日常開頁自動拉取請使用下方簽發的受限子金鑰 (<code className="font-mono">ltp_sk_...</code>)。
                                     </p>
+
+                                    <div className="bg-amber-50/70 border border-amber-200 rounded-xl p-2.5">
+                                        <label className="block text-[10px] font-bold text-amber-900 mb-1">
+                                            🛡️ Master Admin Token（僅本次操作使用，不落盤儲存）
+                                        </label>
+                                        <input
+                                            type="password"
+                                            value={masterAdminToken}
+                                            onChange={(e) => setMasterAdminToken(e.target.value)}
+                                            placeholder="輸入 Worker 的 API_SECRET_TOKEN 以管理子金鑰"
+                                            className="w-full border border-amber-300 bg-white rounded-lg px-2.5 py-1.5 text-xs font-mono focus:outline-none focus:border-amber-500"
+                                        />
+                                    </div>
 
                                     {/* 簽發新子金鑰表單 */}
                                     <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 bg-white p-3 rounded-xl border border-slate-200">

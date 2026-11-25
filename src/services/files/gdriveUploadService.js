@@ -10,6 +10,7 @@ import { logger } from '../../utils/logger';
 
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB per chunk (Google Drive 規範需為 256KB 的整數倍)
 const MAX_CHUNK_RETRIES = 3;
+const MAX_UPLOAD_BYTES = 500 * 1024 * 1024; // 500 MB 上傳容量上限防護
 
 /**
  * 查詢 Google Drive 上傳工作階段目前已接收的位元組偏移量
@@ -55,6 +56,12 @@ async function queryResumableOffset(sessionUri, totalSize) {
 export async function uploadLargeFileToDrive(file, accessToken, onProgress = null) {
     if (!accessToken) {
         return { success: false, error: '未登入 Google 帳號，請先連結 Google Drive' };
+    }
+    if (!file || typeof file.size !== 'number' || file.size <= 0) {
+        return { success: false, error: '無效的檔案或檔案大小為 0' };
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+        return { success: false, error: '檔案大小超過 500MB 安全上限' };
     }
 
     try {
