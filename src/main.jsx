@@ -72,7 +72,7 @@ const ConfigErrorScreen = ({ errors }) => (
                     
                     <div className="flex flex-col sm:flex-row gap-3 pt-4">
                         <a 
-                            href="https://github.com/imhahac/reverse-ticket-manager#deployment" 
+                            href="https://github.com/imhahac/light-trip-plan#deployment" 
                             target="_blank" 
                             rel="noopener noreferrer"
                             className="flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 px-6 rounded-xl transition-all shadow-lg shadow-indigo-500/20"

@@ -52,7 +52,7 @@ async function fetchMetNoForecastFallback(lat, lng, targetDate) {
     try {
         const url = `https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=${lat.toFixed(4)}&lon=${lng.toFixed(4)}`;
         const res = await fetchWithTimeout(url, {
-            headers: { 'User-Agent': 'LightTripPlan/1.0 (https://github.com/reverse-ticket-manager)' }
+            headers: { 'User-Agent': 'LightTripPlan/1.0 (https://github.com/imhahac/light-trip-plan)' }
         }, 4500);
         if (!res.ok) return null;
         const data = await res.json();

@@ -52,8 +52,8 @@ export default defineConfig({
             }
         })
     ],
-    // 記得將 'reverse-ticket-manager' 換成你實際的 GitHub Repository 名稱
-    base: '/reverse-ticket-manager/',
+    // 對應 GitHub Repository 名稱
+    base: '/light-trip-plan/',
     server: {
         host: true,
         port: 5173,

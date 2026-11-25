@@ -109,5 +109,5 @@ curl -X GET "https://<YOUR_WORKER_URL>/api/v1/ingest?channel=default" \
 | 項目 | 說明 |
 |---|---|
 | **有效期** | 30 天 (過期後 KV 會自動刪除該筆資料) |
-| **連結格式** | `https://your-domain/reverse-ticket-manager/?view=<UUID>` |
+| **連結格式** | `https://your-domain/light-trip-plan/?view=<UUID>` |
 | **安全性** | 唯讀存取。這是一個行程的「快照」，即使之後你修改了本地資料，已分享的連結內容不會變動。 |

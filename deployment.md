@@ -39,8 +39,8 @@
    * 前往 GitHub 儲存庫 `Settings` ➔ `Pages` ➔ `Build and deployment`。
    * **Source** 必須選擇 **`GitHub Actions`**（⚠️ 勿選 `Deploy from a branch`）。
 2. **專案路徑 Base Path**：
-   * 專案 `vite.config.js` 預設為 `base: '/reverse-ticket-manager/'`。
-   * 若您的 GitHub 儲存庫名稱為 `reverse-ticket-manager`，則無須修改；若改名為 `my-trip`，請同步修改 `vite.config.js` 中的 `base: '/my-trip/'`。
+   * 專案 `vite.config.js` 預設為 `base: '/light-trip-plan/'`。
+   * 若您的 GitHub 儲存庫名稱為 `light-trip-plan`，則無須修改；若改名為 `my-trip`，請同步修改 `vite.config.js` 中的 `base: '/my-trip/'`。
 
 ---
 
@@ -72,8 +72,8 @@
   > ⚠️ 注意：必須精確匹配前端進入點（包含 Repository 子路徑）：
   * 本地開發：`http://localhost:5173`
   * 本地開發：`http://localhost:5173/`
-  * 本地開發：`http://localhost:5173/reverse-ticket-manager/`
-  * 正式生產：`https://<your-username>.github.io/reverse-ticket-manager/`
+  * 本地開發：`http://localhost:5173/light-trip-plan/`
+  * 正式生產：`https://<your-username>.github.io/light-trip-plan/`
 * 點擊建立後，儲存產生的 **用戶端 ID (Client ID)** 與 **用戶端密碼 (Client Secret)**。
 
 ---
@@ -225,7 +225,7 @@
 
 ### 2. Google 登入報錯 `400: redirect_uri_mismatch`
 * **原因**：Google Cloud Console 內設定的重新導向網址與當前頁面網址不吻合。
-* **解決**：確保 Google Console 中的「已獲授權的重新導向 URI」包含 `https://<your-username>.github.io/reverse-ticket-manager/`（注意結尾斜線）。
+* **解決**：確保 Google Console 中的「已獲授權的重新導向 URI」包含 `https://<your-username>.github.io/light-trip-plan/`（注意結尾斜線）。
 
 ### 3. Google OAuth 登入彈出 `invalid_grant`
 * **原因**：Google 測試版專案的 OAuth Token 預設有效期限為 7 天，或是密碼修改導致失效。

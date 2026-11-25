@@ -11,7 +11,7 @@
 > **Light Trip Plan** 是一套專為進階旅人、商務出差、背包客與外站機票玩家打造的 **100% Client-Side 離線優先 (Offline-First)** 智慧旅遊規劃、路線演算法最佳化與多幣別清帳平台。
 > 全系統無後端資料庫依賴，隱私 100% 本地留存，並具備純前端憑證解析、向量地圖路線求解、大檔斷點續傳與專業旅遊手冊輸出能力。
 
-🔗 **[線上體驗 Demo](https://imhahac.github.io/reverse-ticket-manager/)**
+🔗 **[線上體驗 Demo](https://imhahac.github.io/light-trip-plan/)**
 
 ---
 

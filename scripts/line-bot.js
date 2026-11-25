@@ -149,7 +149,7 @@ const renderTripText = (trip, tripLabels) => {
         });
     }
 
-    msg += `\n🔗 查看完整行程: https://imhahac.github.io/reverse-ticket-manager/`;
+    msg += `\n🔗 查看完整行程: https://imhahac.github.io/light-trip-plan/`;
     return msg;
 };
 
