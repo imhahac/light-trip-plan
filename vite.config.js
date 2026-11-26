@@ -47,6 +47,16 @@ export default defineConfig({
                             expiration: { maxEntries: 10, maxAgeSeconds: 60 * 60 * 24 * 365 },
                             cacheableResponse: { statuses: [0, 200] }
                         }
+                    },
+                    {
+                        // 僅被動快取支援 CORS (status 200) 的開放向量圖磚與 Terrarium 地形，嚴格避免 opaque (status 0) 7MB 空間膨脹
+                        urlPattern: /^https:\/\/(tiles\.openfreemap\.org|s3\.amazonaws\.com\/elevation-tiles-prod)\/.*/i,
+                        handler: 'CacheFirst',
+                        options: {
+                            cacheName: 'ltp-map-tiles-cache',
+                            expiration: { maxEntries: 250, maxAgeSeconds: 60 * 60 * 24 * 14 },
+                            cacheableResponse: { statuses: [200] }
+                        }
                     }
                 ]
             }

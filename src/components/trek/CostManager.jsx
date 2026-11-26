@@ -33,7 +33,10 @@ import {
     Minus,
     Check,
     Info,
-    ArrowUpDown
+    ArrowUpDown,
+    Camera,
+    History,
+    Loader2
 } from 'lucide-react';
 import { 
     PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
@@ -44,7 +47,8 @@ import { useTrek } from '../../contexts/TrekContext';
 import { useFilterContext } from '../../contexts/FilterContext';
 import { useUIContext } from '../../contexts/UIContext';
 import { useTicketDataContext } from '../../contexts/DataContext';
-import { expenseRepo } from '../../services/db';
+import { expenseRepo, settlementLogRepo } from '../../services/db';
+import { getByokAiConfig, saveByokAiConfig, scanReceiptWithByokAI } from '../../services/ai/byokVisionService';
 import { isDateOverlap } from '../../services/reservations/unifiedReservationService';
 import { SUPPORTED_CURRENCIES, getExchangeRate, freezeExchangeRate } from '../../services/costs/currencyService';
 import { splitEqual, splitByWeights, calculateNetBalances } from '../../services/costs/splitCalculator';
@@ -128,6 +132,49 @@ export default function CostManager() {
     const [memberWeights, setMemberWeights] = useState({ '我': 1, '旅伴A': 1, '旅伴B': 1 });
     const [memberExactAmounts, setMemberExactAmounts] = useState({});
     const [newMemberName, setNewMemberName] = useState('');
+
+    // Phase 2: 多付款人、結算日誌與 BYOK AI 收據掃描
+    const [useMultiPayer, setUseMultiPayer] = useState(false);
+    const [multiPayerAmounts, setMultiPayerAmounts] = useState({});
+    const [settlementLogs, setSettlementLogs] = useState([]);
+    const [showByokPanel, setShowByokPanel] = useState(false);
+    const [byokConfig, setByokConfig] = useState(() => getByokAiConfig());
+    const [isScanningReceipt, setIsScanningReceipt] = useState(false);
+
+    const loadSettlementLogs = useCallback(async () => {
+        if (!activeTrip?.id) {
+            setSettlementLogs([]);
+            return;
+        }
+        const logs = await settlementLogRepo.getByTrip(activeTrip.id);
+        logs.sort((a, b) => (b.settledAt || 0) - (a.settledAt || 0));
+        setSettlementLogs(logs);
+    }, [activeTrip?.id]);
+
+    useEffect(() => {
+        loadSettlementLogs();
+    }, [loadSettlementLogs, dataVersion]);
+
+    const handleScanReceipt = async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        setIsScanningReceipt(true);
+        try {
+            saveByokAiConfig(byokConfig);
+            const result = await scanReceiptWithByokAI(file, byokConfig);
+            if (result.title) setFormTitle(result.title);
+            if (result.amount > 0) setFormAmount(String(result.amount));
+            if (result.currency) setFormCurrency(result.currency);
+            if (result.date) setFormDate(result.date);
+            if (result.category) setFormCategory(result.category);
+            toast.success(`✨ AI 已辨識收據：${result.title} (${result.currency} ${result.amount})`);
+        } catch (err) {
+            toast.error(`收據辨識失敗：${err.message}`);
+        } finally {
+            setIsScanningReceipt(false);
+            e.target.value = '';
+        }
+    };
 
     // 1. 載入手動記帳支出 (依 Scope 切換當前行程或全域)
     const loadCustomExpenses = useCallback(async () => {
@@ -595,6 +642,20 @@ export default function CostManager() {
 
         const expenseId = editingExpense?.id || `exp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
+        let payersList = undefined;
+        if (useMultiPayer) {
+            const rawPayers = Object.entries(multiPayerAmounts)
+                .map(([userId, v]) => ({ userId, rawAmt: parseFloat(v) || 0 }))
+                .filter((p) => p.rawAmt > 0);
+            if (rawPayers.length > 0) {
+                const rate = frozen.rateToTripBase || 1;
+                payersList = rawPayers.map((p) => ({
+                    userId: p.userId,
+                    amount: Math.round(p.rawAmt * rate),
+                }));
+            }
+        }
+
         const updatedExpense = {
             id: expenseId,
             tripId: editingExpense?.tripId || activeTrip?.id,
@@ -608,7 +669,8 @@ export default function CostManager() {
             baseCurrency,
             baseAmount: frozen.baseAmount,
             frozenAt: frozen.frozenAt,
-            paidBy: formPaidBy.trim() || '我',
+            paidBy: payersList ? payersList.map((p) => p.userId).join(' + ') : (formPaidBy.trim() || '我'),
+            payers: payersList,
             splitType: splitMode,
             participants,
             shares: calculatedShares,
@@ -709,17 +771,28 @@ export default function CostManager() {
         }
     };
 
-    // ── 一鍵結清所有債務 (改採單一 IndexedDB saveBatch 原子交易) ─────────────
+    // ── 一鍵結清所有債務 (改採單一 IndexedDB saveBatch 原子交易 + 寫入 Settlement Log) ──
     const handleSettleAll = async () => {
-        if (confirm('確定要將當前所有未結清支出標記為已結清嗎？')) {
+        if (confirm('確定要將當前所有未結清支出標記為已結清並寫入結算日誌嗎？')) {
             const unsettled = customExpenses
                 .filter((exp) => !exp.settled)
                 .map((exp) => ({ ...exp, settled: true }));
             if (unsettled.length > 0) {
                 await expenseRepo.saveBatch(unsettled);
             }
+            if (activeTrip?.id && settleTransactions.length > 0) {
+                await settlementLogRepo.save({
+                    id: `settle_${Date.now()}`,
+                    tripId: activeTrip.id,
+                    settledAt: Date.now(),
+                    currency: baseCurrency,
+                    transactions: settleTransactions,
+                    settledCount: unsettled.length,
+                });
+                await loadSettlementLogs();
+            }
             await loadCustomExpenses();
-            toast.success('🎉 所有帳目已完成結清！');
+            toast.success('🎉 所有帳目已完成結清並記錄於結算日誌！');
             setIsSettleModalOpen(false);
         }
     };
@@ -1232,6 +1305,46 @@ export default function CostManager() {
                             </button>
                         </div>
                         <form onSubmit={handleAddExpenseSubmit} className="space-y-3.5">
+                            {/* BYOK AI 收據拍照自動填表 */}
+                            <div className="bg-indigo-50/70 border border-indigo-100 rounded-xl p-2.5 space-y-2">
+                                <div className="flex items-center justify-between gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowByokPanel((v) => !v)}
+                                        className="text-[11px] font-bold text-indigo-700 hover:text-indigo-900 flex items-center gap-1"
+                                    >
+                                        <Camera className="w-3.5 h-3.5" />
+                                        <span>AI 拍收據自動填表 (BYOK，金鑰僅存本次分頁)</span>
+                                    </button>
+                                    {byokConfig.apiKey && (
+                                        <label className="px-2 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold cursor-pointer flex items-center gap-1">
+                                            {isScanningReceipt ? <Loader2 className="w-3 h-3 animate-spin" /> : <Camera className="w-3 h-3" />}
+                                            <span>{isScanningReceipt ? '辨識中...' : '上傳收據'}</span>
+                                            <input type="file" accept="image/*" className="hidden" onChange={handleScanReceipt} disabled={isScanningReceipt} />
+                                        </label>
+                                    )}
+                                </div>
+                                {showByokPanel && (
+                                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1 text-[11px]">
+                                        <select
+                                            value={byokConfig.provider}
+                                            onChange={(e) => setByokConfig((p) => ({ ...p, provider: e.target.value }))}
+                                            className="border border-indigo-200 rounded-lg px-2 py-1 bg-white"
+                                        >
+                                            <option value="gemini">Gemini Flash</option>
+                                            <option value="openai">OpenAI / 相容</option>
+                                        </select>
+                                        <input
+                                            type="password"
+                                            placeholder="貼上 API Key (sessionStorage)"
+                                            value={byokConfig.apiKey}
+                                            onChange={(e) => setByokConfig((p) => ({ ...p, apiKey: e.target.value }))}
+                                            className="sm:col-span-2 border border-indigo-200 rounded-lg px-2 py-1 bg-white font-mono"
+                                        />
+                                    </div>
+                                )}
+                            </div>
+
                             <div>
                                 <label className="block text-xs font-bold text-slate-500 mb-1">消費項目</label>
                                 <input
@@ -1268,16 +1381,51 @@ export default function CostManager() {
                                     </select>
                                 </div>
                                 <div>
-                                    <label className="block text-xs font-bold text-slate-500 mb-1">付款人</label>
-                                    <input
-                                        type="text"
-                                        required
-                                        value={formPaidBy}
-                                        onChange={(e) => setFormPaidBy(e.target.value)}
-                                        className="w-full border border-gray-300 rounded-xl px-2.5 py-2 text-sm focus:outline-none focus:border-indigo-500"
-                                    />
+                                    <div className="flex items-center justify-between mb-1">
+                                        <label className="block text-xs font-bold text-slate-500">付款人</label>
+                                        <button
+                                            type="button"
+                                            onClick={() => setUseMultiPayer((v) => !v)}
+                                            className="text-[10px] font-bold text-indigo-600 hover:underline"
+                                        >
+                                            {useMultiPayer ? '切回單人' : '多人墊付'}
+                                        </button>
+                                    </div>
+                                    {!useMultiPayer ? (
+                                        <input
+                                            type="text"
+                                            required
+                                            value={formPaidBy}
+                                            onChange={(e) => setFormPaidBy(e.target.value)}
+                                            className="w-full border border-gray-300 rounded-xl px-2.5 py-2 text-sm focus:outline-none focus:border-indigo-500"
+                                        />
+                                    ) : (
+                                        <div className="text-[11px] text-indigo-700 font-bold py-2">請於下方輸入各付款人金額</div>
+                                    )}
                                 </div>
                             </div>
+
+                            {useMultiPayer && (
+                                <div className="bg-slate-50 border border-slate-200 rounded-xl p-2.5 space-y-1.5 text-xs">
+                                    <div className="font-bold text-slate-700">多人共同墊付金額 ({formCurrency})</div>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        {allMembers.map((m) => (
+                                            <label key={m} className="flex items-center justify-between gap-1.5 bg-white border border-slate-200 rounded-lg px-2 py-1">
+                                                <span className="truncate font-semibold">{m}</span>
+                                                <input
+                                                    type="number"
+                                                    step="any"
+                                                    min="0"
+                                                    placeholder="0"
+                                                    value={multiPayerAmounts[m] || ''}
+                                                    onChange={(e) => setMultiPayerAmounts((prev) => ({ ...prev, [m]: e.target.value }))}
+                                                    className="w-20 text-right border border-slate-200 rounded px-1.5 py-0.5 font-mono"
+                                                />
+                                            </label>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
 
                             <div className="grid grid-cols-2 gap-3">
                                 <div>
@@ -1554,6 +1702,31 @@ export default function CostManager() {
                                         </div>
                                         <div className="font-black text-sm text-slate-900 font-mono">
                                             ${tx.amount.toLocaleString()} <span className="text-xs font-normal text-slate-400">{baseCurrency}</span>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {/* 結算歷史日誌 (Settlement Log) */}
+                        {settlementLogs.length > 0 && (
+                            <div className="mt-3 pt-3 border-t border-slate-100 space-y-1.5 max-h-36 overflow-y-auto">
+                                <div className="text-[11px] font-extrabold text-slate-500 flex items-center gap-1">
+                                    <History className="w-3.5 h-3.5" />
+                                    <span>結算歷史日誌 ({settlementLogs.length})</span>
+                                </div>
+                                {settlementLogs.map((log) => (
+                                    <div key={log.id} className="text-[11px] bg-slate-50 border border-slate-200/70 rounded-lg px-2.5 py-1.5 space-y-0.5">
+                                        <div className="flex items-center justify-between text-slate-500">
+                                            <span>{new Date(log.settledAt).toLocaleString()}</span>
+                                            <span>結清 {log.settledCount || 0} 筆帳目</span>
+                                        </div>
+                                        <div className="flex flex-wrap gap-1.5">
+                                            {(log.transactions || []).map((tx, ti) => (
+                                                <span key={ti} className="bg-white border border-slate-200 rounded px-1.5 py-0.5 font-mono text-[10px] text-slate-700">
+                                                    {tx.from} → {tx.to}: {tx.amount.toLocaleString()} {log.currency}
+                                                </span>
+                                            ))}
                                         </div>
                                     </div>
                                 ))}

@@ -4,7 +4,7 @@
  * 雙欄佈局視角切換器、以及 Google Drive 雲端同步狀態
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { 
     Compass, 
@@ -26,14 +26,25 @@ import {
     X,
     Edit2,
     Archive,
-    ArchiveRestore
+    ArchiveRestore,
+    Wifi,
+    WifiOff,
+    Palette,
+    HelpCircle
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { useTrek } from '../../contexts/TrekContext';
 import { useUIContext } from '../../contexts/UIContext';
 import { useSyncContext } from '../../contexts/SyncContext';
 import { getTripStatus, isTripArchivedOrEnded } from '../../services/trips/tripStatusService';
+import { isManualOfflineMode, setManualOfflineMode, subscribeOfflineMode } from '../../services/sync/offlineModeService';
+import { flushOfflineOutbox, resolveOutboxConflict } from '../../services/sync/offlineOutboxService';
+import { getStoredApiSyncConfig } from '../../services/api/ingestApiService';
 import { CONFIG } from '../../constants/config';
 import ExportImportModal from './ExportImportModal';
+import ConflictResolutionModal from './ConflictResolutionModal';
+import AppearanceSettingsModal from './AppearanceSettingsModal';
+import QuickHelpModal from './QuickHelpModal';
 
 export default function TrekHeader() {
     const { 
@@ -66,6 +77,54 @@ export default function TrekHeader() {
     const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
     const [isStatusModalOpen, setIsStatusModalOpen] = useState(false);
     const [isArchivedExpanded, setIsArchivedExpanded] = useState(true);
+    const [manualOffline, setManualOffline] = useState(() => isManualOfflineMode());
+    const [activeConflict, setActiveConflict] = useState(null);
+    const [isResolvingConflict, setIsResolvingConflict] = useState(false);
+    const [isAppearanceOpen, setIsAppearanceOpen] = useState(false);
+    const [isHelpOpen, setIsHelpOpen] = useState(false);
+
+    useEffect(() => {
+        return subscribeOfflineMode((effectiveOffline, isManual) => {
+            setManualOffline(isManual);
+            if (!effectiveOffline) {
+                const cfg = getStoredApiSyncConfig();
+                if (cfg.endpointUrl && cfg.apiToken) {
+                    flushOfflineOutbox({ endpointUrl: cfg.endpointUrl, apiToken: cfg.apiToken })
+                        .then((res) => {
+                            if (res.flushed > 0) toast.success(`已自動同步 ${res.flushed} 筆離線變更`);
+                            if (res.conflicts?.length > 0) setActiveConflict(res.conflicts[0]);
+                        })
+                        .catch(() => {});
+                }
+            }
+        });
+    }, []);
+
+    const handleToggleOfflineMode = () => {
+        const next = setManualOfflineMode(!manualOffline);
+        setManualOffline(next);
+        toast.info(next ? '已切換為手動離線模式（僅使用本地與快取資料）' : '已恢復連線模式');
+    };
+
+    const handleResolveConflict = async (choice) => {
+        if (!activeConflict) return;
+        setIsResolvingConflict(true);
+        try {
+            const cfg = getStoredApiSyncConfig();
+            await resolveOutboxConflict({
+                choice,
+                conflict: activeConflict,
+                endpointUrl: cfg.endpointUrl,
+                apiToken: cfg.apiToken,
+            });
+            toast.success(choice === 'keep-mine' ? '已強制推送您的離線版本' : '已採用雲端最新版本');
+            setActiveConflict(null);
+        } catch (err) {
+            toast.error(`衝突解決失敗：${err.message}`);
+        } finally {
+            setIsResolvingConflict(false);
+        }
+    };
 
     const [newTitle, setNewTitle] = useState('');
     const [newStartDate, setNewStartDate] = useState(new Date().toISOString().slice(0, 10));
@@ -368,8 +427,43 @@ export default function TrekHeader() {
                     )}
                 </div>
 
-                {/* 3. Right Toolbar: Context-Aware Layout Toggles & Google Auth Hub */}
+                {/* 3. Right Toolbar: Offline Toggle, Export/Import & Google Auth Hub */}
                 <div className="flex items-center gap-2">
+                    {/* 手動離線模式開關 */}
+                    <button
+                        type="button"
+                        onClick={handleToggleOfflineMode}
+                        title={manualOffline ? '目前為手動離線模式，點擊恢復連線' : '點擊切換為全 App 離線模式'}
+                        className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold border transition ${
+                            manualOffline
+                                ? 'bg-amber-500/20 text-amber-300 border-amber-400/50 hover:bg-amber-500/30'
+                                : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                        }`}
+                    >
+                        {manualOffline ? <WifiOff className="w-3.5 h-3.5" /> : <Wifi className="w-3.5 h-3.5 text-emerald-400" />}
+                        <span className="hidden md:inline">{manualOffline ? '離線模式' : '線上'}</span>
+                    </button>
+
+                    {/* 外觀主題與語系設定 */}
+                    <button
+                        type="button"
+                        onClick={() => setIsAppearanceOpen(true)}
+                        title="外觀主題（深淺色 / 7 色 / 字體 / 中英日語系）"
+                        className="p-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-slate-300 hover:text-white transition"
+                    >
+                        <Palette className="w-3.5 h-3.5" />
+                    </button>
+
+                    {/* 頂部 ? 快速上手指南 */}
+                    <button
+                        type="button"
+                        onClick={() => setIsHelpOpen(true)}
+                        title="快速上手指南與快捷鍵 (?)"
+                        className="p-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-slate-300 hover:text-white transition"
+                    >
+                        <HelpCircle className="w-3.5 h-3.5" />
+                    </button>
+
                     {/* 匯入匯出與手冊按鈕 */}
                     <button
                         onClick={() => setIsExportModalOpen(true)}
@@ -709,6 +803,14 @@ export default function TrekHeader() {
                 isOpen={isExportModalOpen}
                 onClose={() => setIsExportModalOpen(false)}
             />
+            <ConflictResolutionModal
+                conflict={activeConflict}
+                isResolving={isResolvingConflict}
+                onResolve={handleResolveConflict}
+                onClose={() => setActiveConflict(null)}
+            />
+            <AppearanceSettingsModal isOpen={isAppearanceOpen} onClose={() => setIsAppearanceOpen(false)} />
+            <QuickHelpModal isOpen={isHelpOpen} onClose={() => setIsHelpOpen(false)} />
         </header>
     );
 }

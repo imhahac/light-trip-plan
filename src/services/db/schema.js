@@ -4,7 +4,7 @@
  */
 
 export const DB_NAME = 'treklite_db';
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 
 export const STORES = {
     TRIPS: 'trips',
@@ -22,6 +22,11 @@ export const STORES = {
     TICKETS: 'tickets',
     HOTELS: 'hotels',
     ACTIVITIES: 'activities',
+    // v3 Light TREK 升級：離線佇列、結算日誌、檔案回收桶、非同步旅伴協作
+    SYNC_OUTBOX: 'syncOutbox',
+    SETTLEMENT_LOGS: 'settlementLogs',
+    FILE_TRASH: 'fileTrash',
+    COLLAB_ITEMS: 'collabItems',
 };
 
 export function setupIndexedDBSchema(db) {
@@ -119,5 +124,34 @@ export function setupIndexedDBSchema(db) {
     if (!db.objectStoreNames.contains(STORES.ACTIVITIES)) {
         const store = db.createObjectStore(STORES.ACTIVITIES, { keyPath: 'id' });
         store.createIndex('startDate', 'startDate', { unique: false });
+    }
+
+    // 15. Sync Outbox (v3 裝置本機離線變更佇列，不納入跨裝置備份)
+    if (!db.objectStoreNames.contains(STORES.SYNC_OUTBOX)) {
+        const store = db.createObjectStore(STORES.SYNC_OUTBOX, { keyPath: 'id' });
+        store.createIndex('channel', 'channel', { unique: false });
+        store.createIndex('status', 'status', { unique: false });
+        store.createIndex('createdAt', 'createdAt', { unique: false });
+    }
+
+    // 16. Settlement Logs (v3 分帳結清歷史日誌)
+    if (!db.objectStoreNames.contains(STORES.SETTLEMENT_LOGS)) {
+        const store = db.createObjectStore(STORES.SETTLEMENT_LOGS, { keyPath: 'id' });
+        store.createIndex('tripId', 'tripId', { unique: false });
+        store.createIndex('settledAt', 'settledAt', { unique: false });
+    }
+
+    // 17. File Trash (v3 附件回收桶，保留 30 天可還原)
+    if (!db.objectStoreNames.contains(STORES.FILE_TRASH)) {
+        const store = db.createObjectStore(STORES.FILE_TRASH, { keyPath: 'id' });
+        store.createIndex('tripId', 'tripId', { unique: false });
+        store.createIndex('trashedAt', 'trashedAt', { unique: false });
+    }
+
+    // 18. Collab Items (v3 非同步旅伴共筆：筆記、連結、投票、What's Next)
+    if (!db.objectStoreNames.contains(STORES.COLLAB_ITEMS)) {
+        const store = db.createObjectStore(STORES.COLLAB_ITEMS, { keyPath: 'id' });
+        store.createIndex('tripId', 'tripId', { unique: false });
+        store.createIndex('kind', 'kind', { unique: false });
     }
 }

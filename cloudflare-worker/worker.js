@@ -172,7 +172,30 @@ async function replayChannelInbox(kv, channel) {
     }
   }
 
-  // 批次讀取所有事件
+  // 讀取既有基底快照（支援歷史版本或自動壓縮後的 checkpoint）
+  let baseRevision = 0;
+  let state = {};
+  let seenKeys = new Set();
+  let latestUpdatedAt = null;
+  let latestSnapshotId = null;
+
+  const baseRaw = await kv.get(`api_sync:${channel}`);
+  if (baseRaw) {
+    try {
+      const baseRecord = JSON.parse(baseRaw);
+      baseRevision = Number(baseRecord.revision || 0);
+      state = baseRecord.payload || {};
+      latestUpdatedAt = baseRecord.updatedAt || null;
+      latestSnapshotId = baseRecord.snapshotId || null;
+      if (Array.isArray(baseRecord.seenIdempotencyKeys)) {
+        seenKeys = new Set(baseRecord.seenIdempotencyKeys.slice(-200));
+      }
+    } catch {
+      // ignore malformed base
+    }
+  }
+
+  // 批次讀取所有 Inbox 事件
   const rawEvents = await Promise.all(eventKeys.map((k) => kv.get(k)));
   const events = rawEvents
     .map((raw) => {
@@ -185,26 +208,60 @@ async function replayChannelInbox(kv, channel) {
     })
     .filter(Boolean);
 
+  // 去重（支援離線 Outbox X-Idempotency-Key 冪等重播）
+  const uniqueEvents = [];
+  for (const ev of events) {
+    if (ev.idempotencyKey) {
+      if (seenKeys.has(ev.idempotencyKey)) continue;
+      seenKeys.add(ev.idempotencyKey);
+    }
+    uniqueEvents.push(ev);
+  }
+
   // 從最後一次 replace checkpoint 開始重播，大幅加速讀取
   let startIdx = 0;
-  for (let i = events.length - 1; i >= 0; i--) {
-    if (events[i].mode === "replace") {
+  let hasReplace = false;
+  for (let i = uniqueEvents.length - 1; i >= 0; i--) {
+    if (uniqueEvents[i].mode === "replace") {
       startIdx = i;
+      hasReplace = true;
       break;
     }
   }
+  if (hasReplace) {
+    state = {};
+  }
 
-  let state = {};
-  for (let i = startIdx; i < events.length; i++) {
-    const ev = events[i];
+  for (let i = startIdx; i < uniqueEvents.length; i++) {
+    const ev = uniqueEvents[i];
     state = mergeIngestPayload(state, ev.payload || {}, ev.mode === "replace" ? "replace" : "merge");
   }
 
-  const latest = events[events.length - 1];
+  const latest = uniqueEvents[uniqueEvents.length - 1];
+  const totalRevision = baseRevision + uniqueEvents.length;
+  const finalUpdatedAt = latest?.createdAt || latestUpdatedAt;
+  const finalSnapshotId = latest?.snapshotId || latestSnapshotId;
+
+  // Auto-Compaction：當 Inbox 累積達 20 筆以上，壓縮回單一快照鍵並清除舊 Inbox 鍵，保護 KV 免費額度
+  if (eventKeys.length >= 20) {
+    const compacted = {
+      revision: totalRevision,
+      updatedAt: finalUpdatedAt,
+      snapshotId: finalSnapshotId,
+      payload: state,
+      seenIdempotencyKeys: Array.from(seenKeys).slice(-200),
+    };
+    await kv.put(`api_sync:${channel}`, JSON.stringify(compacted), {
+      expirationTtl: API_KV_TTL_SECONDS,
+    });
+    await Promise.all(eventKeys.map((k) => kv.delete(k)));
+    auditLog("inbox_compacted", { channel, compactedEvents: eventKeys.length, revision: totalRevision });
+  }
+
   return {
-    revision: events.length,
-    updatedAt: latest?.createdAt || null,
-    snapshotId: latest?.snapshotId || null,
+    revision: totalRevision,
+    updatedAt: finalUpdatedAt,
+    snapshotId: finalSnapshotId,
     payload: state,
   };
 }
@@ -527,7 +584,7 @@ export default {
       "Access-Control-Allow-Origin": allowedOrigin,
       "Vary": "Origin",
       "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key, X-Share-Token",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key, X-Share-Token, X-Idempotency-Key",
       "X-Content-Type-Options": "nosniff",
       "Cache-Control": "no-store"
     };
@@ -771,6 +828,8 @@ export default {
         const updatedAt = new Date().toISOString();
         const paddedTs = String(Date.now()).padStart(15, "0");
         const snapshotId = shouldCreateSnapshot ? uuid() : null;
+        const rawIdemKey = (request.headers.get("X-Idempotency-Key") || "").trim();
+        const idempotencyKey = rawIdemKey && /^[a-zA-Z0-9._:-]{1,64}$/.test(rawIdemKey) ? rawIdemKey : null;
 
         // 每個寫入事件寫入獨立 KV Key，完全避免併發 Read-Modify-Write 覆蓋
         const inboxEventKey = `api_inbox:${channel}:${paddedTs}_${eventId}`;
@@ -778,6 +837,7 @@ export default {
           id: eventId,
           channel,
           mode,
+          idempotencyKey,
           createdAt: updatedAt,
           author: auth.label || auth.keyId,
           snapshotId,

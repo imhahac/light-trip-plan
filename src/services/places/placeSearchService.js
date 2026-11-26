@@ -47,8 +47,39 @@ export async function searchPlaces(query) {
  * @param {{south: number, west: number, north: number, east: number}} bbox
  * @param {'sights' | 'food' | 'lodging' | 'transit'} category
  */
-export async function fetchViewportPOIs(bbox, category = 'sights', limit = 20) {
+const POI_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const OVERPASS_MIN_INTERVAL_MS = 1500;
+const OVERPASS_MAX_BBOX_SPAN_DEG = 1.5;
+const poiCache = new Map();
+const wikiCache = new Map();
+let lastOverpassCallAt = 0;
+
+/**
+ * 透過 Overpass API 抓取當前地圖視角 (Bounding Box) 內的熱門景點與美食
+ * 具備 1.5s 節流防護、BBox 面積保護、10s Timeout 與 24h 快取
+ * @param {{south: number, west: number, north: number, east: number}} bbox
+ * @param {'sights' | 'food' | 'lodging' | 'transit' | 'convenience' | 'toilets'} category
+ */
+export async function fetchViewportPOIs(bbox, category = 'sights', limit = 25) {
     if (!bbox) return [];
+
+    const { south, west, north, east } = bbox;
+    if (Math.abs(north - south) > OVERPASS_MAX_BBOX_SPAN_DEG || Math.abs(east - west) > OVERPASS_MAX_BBOX_SPAN_DEG) {
+        logger.warn('Overpass BBox too large; zoom in to explore POIs');
+        return [];
+    }
+
+    const cacheKey = `${category}:${south.toFixed(3)},${west.toFixed(3)},${north.toFixed(3)},${east.toFixed(3)}`;
+    const cached = poiCache.get(cacheKey);
+    if (cached && Date.now() - cached.ts < POI_CACHE_TTL_MS) {
+        return cached.items;
+    }
+
+    const now = Date.now();
+    if (now - lastOverpassCallAt < OVERPASS_MIN_INTERVAL_MS) {
+        return cached?.items || [];
+    }
+    lastOverpassCallAt = now;
 
     let filterTag = '["tourism"~"attraction|museum|viewpoint"]';
     if (category === 'food') {
@@ -57,66 +88,94 @@ export async function fetchViewportPOIs(bbox, category = 'sights', limit = 20) {
         filterTag = '["tourism"="hotel"]';
     } else if (category === 'transit') {
         filterTag = '["railway"~"station|subway_entrance"]';
+    } else if (category === 'convenience') {
+        filterTag = '["shop"~"convenience|supermarket"]';
+    } else if (category === 'toilets') {
+        filterTag = '["amenity"="toilets"]';
     }
 
-    const { south, west, north, east } = bbox;
     const overpassQuery = `
-        [out:json][timeout:15];
+        [out:json][timeout:10];
         (
             node${filterTag}(${south},${west},${north},${east});
         );
         out body ${limit};
     `;
 
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
     try {
         const res = await fetch('https://overpass-api.de/api/interpreter', {
             method: 'POST',
-            body: overpassQuery
+            body: overpassQuery,
+            signal: controller.signal,
         });
         if (!res.ok) return [];
         const data = await res.json();
 
-        return (data.elements || []).map(el => ({
+        const items = (data.elements || []).map(el => ({
             id: `poi_${el.id}`,
-            name: el.tags.name || el.tags['name:zh'] || el.tags['name:en'] || '未知名稱',
+            name: el.tags?.['name:zh'] || el.tags?.name || el.tags?.['name:en'] || '未知名稱',
             lat: el.lat,
             lng: el.lon,
             category: category,
-            tags: el.tags,
-            openingHours: el.tags.opening_hours || null
+            tags: el.tags || {},
+            openingHours: el.tags?.opening_hours || null
         }));
+        poiCache.set(cacheKey, { ts: Date.now(), items });
+        return items;
     } catch (err) {
         logger.warn('Overpass POI query failed or timed out:', err);
         return [];
+    } finally {
+        clearTimeout(timer);
     }
 }
 
 /**
- * 抓取維基百科景點介紹與封面圖
+ * 抓取維基百科 / Wikidata 景點介紹與封面圖（含本地記憶體快取）
  * @param {string} placeName
  */
 export async function enrichPlaceWithWikipedia(placeName) {
     if (!placeName) return null;
     const cleanTitle = placeName.split('(')[0].split('（')[0].trim();
+    if (!cleanTitle) return null;
 
+    const cacheKey = cleanTitle.toLowerCase();
+    if (wikiCache.has(cacheKey)) {
+        return wikiCache.get(cacheKey);
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 7000);
     try {
-        // 先嘗試中文維基
-        let res = await fetch(`https://zh.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(cleanTitle)}`);
+        // 先嘗試中文維基，失敗則嘗試英文與日文維基
+        let res = await fetch(`https://zh.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(cleanTitle)}`, { signal: controller.signal });
         if (!res.ok) {
-            // 嘗試英文維基
-            res = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(cleanTitle)}`);
+            res = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(cleanTitle)}`, { signal: controller.signal });
         }
-        if (!res.ok) return null;
+        if (!res.ok) {
+            res = await fetch(`https://ja.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(cleanTitle)}`, { signal: controller.signal });
+        }
+        if (!res.ok) {
+            wikiCache.set(cacheKey, null);
+            return null;
+        }
 
         const data = await res.json();
-        return {
+        const result = {
             title: data.title,
             description: data.extract || null,
             thumbnailUrl: data.thumbnail?.source || null,
-            pageUrl: data.content_urls?.desktop?.page || null
+            pageUrl: data.content_urls?.desktop?.page || null,
+            wikidataId: data.wikibase_item || null,
         };
+        wikiCache.set(cacheKey, result);
+        return result;
     } catch (err) {
         logger.warn('Wikipedia enrichment failed:', err);
         return null;
+    } finally {
+        clearTimeout(timer);
     }
 }

@@ -5,6 +5,8 @@ import { Toaster, toast } from 'sonner'
 import App from './App.jsx'
 import './index.css'
 import { ErrorBoundary } from './ErrorBoundary.jsx'
+import { I18nProvider } from './i18n/index.jsx'
+import { ThemeProvider } from './contexts/ThemeContext.jsx'
 import { registerSW } from 'virtual:pwa-register'
 
 const updateSW = registerSW({
@@ -100,9 +102,13 @@ ReactDOM.createRoot(document.getElementById('root')).render(
             <ConfigErrorScreen errors={envStatus.errors} />
         ) : (
             <GoogleOAuthProvider clientId={clientId}>
-                <ErrorBoundary>
-                    <App />
-                </ErrorBoundary>
+                <ThemeProvider>
+                    <I18nProvider>
+                        <ErrorBoundary>
+                            <App />
+                        </ErrorBoundary>
+                    </I18nProvider>
+                </ThemeProvider>
                 <Toaster position="top-right" richColors closeButton duration={4000} />
             </GoogleOAuthProvider>
         )}

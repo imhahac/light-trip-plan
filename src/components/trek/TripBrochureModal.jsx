@@ -36,6 +36,11 @@ export default function TripBrochureModal({
     expenses = [] 
 }) {
     const [internalDays, setInternalDays] = useState(null);
+    // Phase 2: PDF 手冊客製化開關（封面 / 景點照片 / 每日自動分頁 / 費用總表）
+    const [includeCover, setIncludeCover] = useState(true);
+    const [includePhotos, setIncludePhotos] = useState(true);
+    const [pageBreakPerDay, setPageBreakPerDay] = useState(false);
+    const [includeCosts, setIncludeCosts] = useState(true);
 
     // 檢查外部是否已傳入自帶 places 的 dayPlans
     const hasExternalPlaces = useMemo(() => {
@@ -170,35 +175,55 @@ export default function TripBrochureModal({
             <div className="bg-white rounded-3xl shadow-2xl max-w-4xl w-full overflow-hidden flex flex-col my-auto border border-gray-200 print:border-none print:shadow-none print:w-full print:max-w-none">
                 
                 {/* 頂部操作列 (列印時隱藏) */}
-                <div className="p-4 bg-slate-900 text-white flex items-center justify-between no-print sticky top-0 z-10 shadow-md">
-                    <div className="flex items-center gap-2">
-                        <span className="text-sm font-bold bg-indigo-500/20 text-indigo-300 px-2.5 py-1 rounded-lg border border-indigo-500/30">
-                            A4 旅遊手冊排版
-                        </span>
-                        <span className="text-xs text-slate-400 hidden sm:inline">可直接列印或另存為向量 PDF</span>
-                    </div>
+                <div className="p-4 bg-slate-900 text-white space-y-2.5 no-print sticky top-0 z-10 shadow-md">
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                            <span className="text-sm font-bold bg-indigo-500/20 text-indigo-300 px-2.5 py-1 rounded-lg border border-indigo-500/30">
+                                A4 旅遊手冊排版
+                            </span>
+                            <span className="text-xs text-slate-400 hidden sm:inline">可直接列印或另存為向量 PDF</span>
+                        </div>
 
-                    <div className="flex items-center gap-2">
-                        <button
-                            onClick={handleCopyMarkdown}
-                            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition"
-                        >
-                            <Copy className="w-3.5 h-3.5" />
-                            <span>複製 Markdown</span>
-                        </button>
-                        <button
-                            onClick={handlePrint}
-                            className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition"
-                        >
-                            <Printer className="w-3.5 h-3.5" />
-                            <span>列印 / 匯存 PDF</span>
-                        </button>
-                        <button
-                            onClick={onClose}
-                            className="p-1.5 text-slate-400 hover:text-white rounded-lg transition ml-2"
-                        >
-                            <X className="w-5 h-5" />
-                        </button>
+                        <div className="flex items-center gap-2">
+                            <button
+                                onClick={handleCopyMarkdown}
+                                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition"
+                            >
+                                <Copy className="w-3.5 h-3.5" />
+                                <span>複製 Markdown</span>
+                            </button>
+                            <button
+                                onClick={handlePrint}
+                                className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition"
+                            >
+                                <Printer className="w-3.5 h-3.5" />
+                                <span>列印 / 匯存 PDF</span>
+                            </button>
+                            <button
+                                onClick={onClose}
+                                className="p-1.5 text-slate-400 hover:text-white rounded-lg transition ml-2"
+                            >
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-4 text-[11px] text-slate-300 border-t border-slate-800 pt-2">
+                        <label className="flex items-center gap-1.5 cursor-pointer">
+                            <input type="checkbox" checked={includeCover} onChange={(e) => setIncludeCover(e.target.checked)} className="rounded text-indigo-500" />
+                            <span>顯示封面頁</span>
+                        </label>
+                        <label className="flex items-center gap-1.5 cursor-pointer">
+                            <input type="checkbox" checked={includePhotos} onChange={(e) => setIncludePhotos(e.target.checked)} className="rounded text-indigo-500" />
+                            <span>顯示景點照片</span>
+                        </label>
+                        <label className="flex items-center gap-1.5 cursor-pointer">
+                            <input type="checkbox" checked={pageBreakPerDay} onChange={(e) => setPageBreakPerDay(e.target.checked)} className="rounded text-indigo-500" />
+                            <span>每日自動分頁</span>
+                        </label>
+                        <label className="flex items-center gap-1.5 cursor-pointer">
+                            <input type="checkbox" checked={includeCosts} onChange={(e) => setIncludeCosts(e.target.checked)} className="rounded text-indigo-500" />
+                            <span>包含費用總表</span>
+                        </label>
                     </div>
                 </div>
 
@@ -206,6 +231,7 @@ export default function TripBrochureModal({
                 <div className="p-8 sm:p-12 space-y-10 text-slate-800 font-sans print:p-6">
                     
                     {/* ── 1. 封面區塊 (Cover Page) ────────────────────────── */}
+                    {includeCover && (
                     <div className="border-b-2 border-indigo-600 pb-8 print:page-break-after">
                         <div className="flex items-center justify-between text-xs text-slate-400 font-mono tracking-widest uppercase mb-3">
                             <span>TREK TRAVEL BROCHURE</span>
@@ -238,6 +264,7 @@ export default function TripBrochureModal({
                             </div>
                         </div>
                     </div>
+                    )}
 
                     {/* ── 2. 交通憑證 (航班與接駁) ────────────────────────── */}
                     {flights.length > 0 && (
@@ -348,7 +375,7 @@ export default function TripBrochureModal({
                         {effectiveDayPlans.map((plan, pIdx) => {
                             const planPlaces = plan.places || [];
                             return (
-                                <div key={plan.id || pIdx} className="space-y-3 print:page-break-inside-avoid">
+                                <div key={plan.id || pIdx} className={`space-y-3 print:page-break-inside-avoid ${pageBreakPerDay && pIdx > 0 ? 'print:break-before-page' : ''}`}>
                                     <div className="bg-slate-100 p-2.5 rounded-xl flex items-center justify-between text-xs font-bold text-slate-800">
                                         <span className="flex items-center gap-2">
                                             <span>Day {pIdx + 1} · {plan.date || '未排定'}</span>
@@ -379,6 +406,15 @@ export default function TripBrochureModal({
                                                         </span>
                                                         <span className="font-bold text-slate-900 text-sm">{place.name}</span>
                                                     </div>
+                                                    {includePhotos && (place.enrichment?.thumbnailUrl || place.photoUrl) && (
+                                                        <div className="pl-7 pt-1">
+                                                            <img
+                                                                src={place.enrichment?.thumbnailUrl || place.photoUrl}
+                                                                alt={place.name}
+                                                                className="w-28 h-20 object-cover rounded-lg border border-slate-200"
+                                                            />
+                                                        </div>
+                                                    )}
                                                     {place.address && (
                                                         <p className="text-slate-500 pl-7 text-[11px]">{place.address}</p>
                                                     )}
@@ -395,6 +431,31 @@ export default function TripBrochureModal({
                             );
                         })}
                     </div>
+
+                    {/* ── 4.5 費用總表 (可選開關) ─────────────────────────── */}
+                    {includeCosts && expenses.length > 0 && (
+                        <div className="space-y-3 print:page-break-inside-avoid">
+                            <div className="flex items-center justify-between border-b border-gray-200 pb-2">
+                                <div className="flex items-center gap-2">
+                                    <DollarSign className="w-4 h-4 text-indigo-600" />
+                                    <h2 className="text-base font-bold text-slate-900 uppercase tracking-wider">費用總表</h2>
+                                </div>
+                                <span className="text-xs font-black text-indigo-700 font-mono">
+                                    合計約 {trip.baseCurrency || 'TWD'} {totalExpense.toLocaleString()}
+                                </span>
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                                {expenses.slice(0, 20).map((exp, ei) => (
+                                    <div key={exp.id || ei} className="flex items-center justify-between p-2 rounded-lg bg-slate-50 border border-slate-200/70">
+                                        <span className="font-semibold text-slate-800 truncate pr-2">{exp.title || '支出項目'}</span>
+                                        <span className="font-mono font-bold text-slate-700 shrink-0">
+                                            {exp.currency || trip.baseCurrency || 'TWD'} {(Number(exp.amount) || Number(exp.baseAmount) || 0).toLocaleString()}
+                                        </span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
 
                     {/* ── 5. 行李清單與重點待辦 ────────────────────────────── */}
                     {packingItems.length > 0 && (

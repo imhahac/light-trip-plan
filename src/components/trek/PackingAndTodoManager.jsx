@@ -55,6 +55,7 @@ export default function PackingAndTodoManager() {
     const [newPackingCategory, setNewPackingCategory] = useState('essential');
     const [newPackingNotes, setNewPackingNotes] = useState('');
     const [newPackingWeight, setNewPackingWeight] = useState(200);
+    const [newPackingBag, setNewPackingBag] = useState('隨身背包');
     const [newPackingVisibility, setNewPackingVisibility] = useState('all');
     const [newPackingAssignee, setNewPackingAssignee] = useState('全體');
 
@@ -129,6 +130,7 @@ export default function PackingAndTodoManager() {
             assignee: newPackingAssignee.trim() || '全體',
             visibilityTier: newPackingVisibility, // 'all' | 'travellers' | 'private'
             weightGrams: Number(newPackingWeight) || 0,
+            bagName: newPackingBag || '未分袋',
             createdAt: Date.now()
         };
 
@@ -465,6 +467,27 @@ export default function PackingAndTodoManager() {
                         ))}
                     </div>
 
+                    {/* 分袋重量統計列 (當啟用重量統計時顯示) */}
+                    {showWeightRollup && packingItems.length > 0 && (() => {
+                        const bagTotals = packingItems.reduce((acc, item) => {
+                            const bag = item.bagName || '未分袋';
+                            acc[bag] = (acc[bag] || 0) + (Number(item.weightGrams) || 0);
+                            return acc;
+                        }, {});
+                        return (
+                            <div className="flex flex-wrap items-center gap-2 text-[11px] bg-indigo-50/60 border border-indigo-100 rounded-xl px-3 py-2">
+                                <span className="font-extrabold text-indigo-800 flex items-center gap-1">
+                                    <Scale className="w-3.5 h-3.5" /> 行李袋配重：
+                                </span>
+                                {Object.entries(bagTotals).map(([bag, grams]) => (
+                                    <span key={bag} className="bg-white border border-indigo-200/80 text-slate-700 font-bold px-2 py-0.5 rounded-lg">
+                                        {bag}: {(grams / 1000).toFixed(2)} kg
+                                    </span>
+                                ))}
+                            </div>
+                        );
+                    })()}
+
                     {/* 新增行李項目輸入行 */}
                     <form onSubmit={handleAddPackingItem} className="bg-white p-3 rounded-xl border border-gray-200 shadow-sm flex flex-wrap gap-2">
                         <input
@@ -482,6 +505,17 @@ export default function PackingAndTodoManager() {
                             {PACKING_CATEGORIES.map(c => (
                                 <option key={c.key} value={c.key}>{c.emoji} {c.label}</option>
                             ))}
+                        </select>
+                        <select
+                            value={newPackingBag}
+                            onChange={(e) => setNewPackingBag(e.target.value)}
+                            className="border border-gray-300 rounded-lg px-2 py-1.5 text-xs bg-white focus:outline-none"
+                            title="選擇歸屬行李袋"
+                        >
+                            <option value="隨身背包">🎒 隨身背包</option>
+                            <option value="登機箱">🧳 登機箱 (7kg)</option>
+                            <option value="託運行李">🛄 託運行李 (23kg)</option>
+                            <option value="未分袋">📦 未分袋</option>
                         </select>
                         <input
                             type="text"

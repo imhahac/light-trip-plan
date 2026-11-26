@@ -504,7 +504,206 @@ export async function parseMapLinks(text) {
 }
 
 /**
- * 統一檔案匯入接口：依據副檔名解析 GPX, KML, KMZ
+ * 計算兩點間 Haversine 球面距離 (km)
+ */
+function trackHaversineKm(lat1, lng1, lat2, lng2) {
+    const toRad = (deg) => (deg * Math.PI) / 180;
+    const R = 6371;
+    const dLat = toRad(lat2 - lat1);
+    const dLng = toRad(lng2 - lng1);
+    const a =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/**
+ * 解析 GPX <trkpt> 完整軌跡與海拔剖面統計（供 Light Tours 高度剖面圖與計畫 vs 實錄對比）
+ * 支援瀏覽器 DOMParser 與 Node.js 正規表示式降級解析
+ * @param {string} gpxText
+ */
+export function parseGpxTrack(gpxText) {
+    if (!gpxText || typeof gpxText !== 'string') {
+        return { name: '', points: [], sampledPoints: [], totalDistanceKm: 0, totalAscentM: 0, totalDescentM: 0, minEleM: null, maxEleM: null, durationMin: null };
+    }
+
+    const rawPoints = [];
+    let trackName = '';
+
+    if (typeof DOMParser !== 'undefined') {
+        const parser = new DOMParser();
+        const xmlDoc = parser.parseFromString(gpxText, 'text/xml');
+        if (xmlDoc.querySelector('parsererror')) {
+            throw new Error('GPX 格式錯誤，無法解析 XML');
+        }
+        trackName = xmlDoc.querySelector('trk > name')?.textContent?.trim()
+            || xmlDoc.querySelector('metadata > name')?.textContent?.trim()
+            || '';
+        const trkpts = xmlDoc.querySelectorAll('trkpt');
+        const nodes = trkpts.length > 0 ? trkpts : xmlDoc.querySelectorAll('rtept');
+        nodes.forEach((pt) => {
+            const lat = parseFloat(pt.getAttribute('lat'));
+            const lng = parseFloat(pt.getAttribute('lon'));
+            if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+            const eleText = pt.querySelector('ele')?.textContent;
+            const ele = eleText != null && Number.isFinite(parseFloat(eleText)) ? parseFloat(eleText) : null;
+            const timeText = pt.querySelector('time')?.textContent?.trim() || null;
+            rawPoints.push({ lat, lng, ele, time: timeText });
+        });
+    } else {
+        const nameMatch = gpxText.match(/<trk>[\s\S]*?<name>([^<]+)<\/name>/i);
+        if (nameMatch) trackName = nameMatch[1].trim();
+        const ptRegex = /<(?:trkpt|rtept)\s+[^>]*lat=["']([^"']+)["'][^>]*lon=["']([^"']+)["'][^>]*>([\s\S]*?)<\/(?:trkpt|rtept)>/gi;
+        let m;
+        while ((m = ptRegex.exec(gpxText)) !== null) {
+            const lat = parseFloat(m[1]);
+            const lng = parseFloat(m[2]);
+            if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+            const eleMatch = m[3].match(/<ele>([^<]+)<\/ele>/i);
+            const timeMatch = m[3].match(/<time>([^<]+)<\/time>/i);
+            rawPoints.push({
+                lat,
+                lng,
+                ele: eleMatch && Number.isFinite(parseFloat(eleMatch[1])) ? parseFloat(eleMatch[1]) : null,
+                time: timeMatch ? timeMatch[1].trim() : null,
+            });
+        }
+    }
+
+    let totalDistanceKm = 0;
+    let totalAscentM = 0;
+    let totalDescentM = 0;
+    let minEleM = null;
+    let maxEleM = null;
+
+    const enriched = rawPoints.map((pt, idx) => {
+        if (idx > 0) {
+            const prev = rawPoints[idx - 1];
+            totalDistanceKm += trackHaversineKm(prev.lat, prev.lng, pt.lat, pt.lng);
+            if (prev.ele !== null && pt.ele !== null) {
+                const diff = pt.ele - prev.ele;
+                // 2m noise filter for GPS elevation jitter
+                if (diff > 2) totalAscentM += diff;
+                else if (diff < -2) totalDescentM += Math.abs(diff);
+            }
+        }
+        if (pt.ele !== null) {
+            minEleM = minEleM === null ? pt.ele : Math.min(minEleM, pt.ele);
+            maxEleM = maxEleM === null ? pt.ele : Math.max(maxEleM, pt.ele);
+        }
+        return {
+            ...pt,
+            distKm: Number(totalDistanceKm.toFixed(2)),
+        };
+    });
+
+    let durationMin = null;
+    if (enriched.length >= 2 && enriched[0].time && enriched[enriched.length - 1].time) {
+        const t0 = Date.parse(enriched[0].time);
+        const t1 = Date.parse(enriched[enriched.length - 1].time);
+        if (Number.isFinite(t0) && Number.isFinite(t1) && t1 >= t0) {
+            durationMin = Math.round((t1 - t0) / 60000);
+        }
+    }
+
+    // Downsample to <= 120 points for fast Recharts rendering
+    const maxSamples = 120;
+    let sampledPoints = enriched;
+    if (enriched.length > maxSamples) {
+        const step = (enriched.length - 1) / (maxSamples - 1);
+        sampledPoints = Array.from({ length: maxSamples }, (_, i) => enriched[Math.round(i * step)]);
+    }
+
+    return {
+        name: trackName,
+        points: enriched,
+        sampledPoints,
+        totalDistanceKm: Number(totalDistanceKm.toFixed(2)),
+        totalAscentM: Math.round(totalAscentM),
+        totalDescentM: Math.round(totalDescentM),
+        minEleM: minEleM !== null ? Math.round(minEleM) : null,
+        maxEleM: maxEleM !== null ? Math.round(maxEleM) : null,
+        durationMin,
+    };
+}
+
+/**
+ * 比較「計畫 GPX」與「實錄 GPX」的里程、爬升與耗時差異
+ */
+export function compareGpxTracks(planned, recorded) {
+    if (!planned || !recorded) return null;
+    const distanceDeltaKm = Number(((recorded.totalDistanceKm || 0) - (planned.totalDistanceKm || 0)).toFixed(2));
+    const ascentDeltaM = Math.round((recorded.totalAscentM || 0) - (planned.totalAscentM || 0));
+    const durationDeltaMin = (recorded.durationMin != null && planned.durationMin != null)
+        ? recorded.durationMin - planned.durationMin
+        : null;
+    return {
+        distanceDeltaKm,
+        ascentDeltaM,
+        durationDeltaMin,
+    };
+}
+
+/**
+ * 解析 Google Takeout 匯出的「已儲存地點」CSV (Title, Note, URL, Tags, Comment)
+ * @param {string} csvText
+ */
+export function parseGoogleTakeoutCsv(csvText) {
+    if (!csvText || typeof csvText !== 'string') return [];
+    const lines = csvText.split(/\r?\n/).filter((l) => l.trim());
+    if (lines.length < 2) return [];
+
+    const parseCsvRow = (row) => {
+        const out = [];
+        let cur = '';
+        let inQuotes = false;
+        for (let i = 0; i < row.length; i++) {
+            const ch = row[i];
+            if (ch === '"') {
+                if (inQuotes && row[i + 1] === '"') {
+                    cur += '"';
+                    i++;
+                } else {
+                    inQuotes = !inQuotes;
+                }
+            } else if (ch === ',' && !inQuotes) {
+                out.push(cur.trim());
+                cur = '';
+            } else {
+                cur += ch;
+            }
+        }
+        out.push(cur.trim());
+        return out;
+    };
+
+    const headers = parseCsvRow(lines[0]).map((h) => h.toLowerCase());
+    const titleIdx = headers.findIndex((h) => h === 'title' || h === 'name' || h === '名稱');
+    const noteIdx = headers.findIndex((h) => h === 'note' || h === 'comment' || h === '備註');
+    const urlIdx = headers.findIndex((h) => h === 'url' || h === 'link');
+    if (titleIdx === -1) return [];
+
+    const results = [];
+    for (let i = 1; i < lines.length; i++) {
+        const cols = parseCsvRow(lines[i]);
+        const name = cols[titleIdx];
+        if (!name) continue;
+        const url = urlIdx >= 0 ? cols[urlIdx] || '' : '';
+        const coordMatch = url.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/) || url.match(/[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)/);
+        results.push({
+            name,
+            desc: noteIdx >= 0 ? cols[noteIdx] || '' : '',
+            originalUrl: url,
+            lat: coordMatch ? parseFloat(coordMatch[1]) : null,
+            lng: coordMatch ? parseFloat(coordMatch[2]) : null,
+            source: 'google_takeout_csv',
+        });
+    }
+    return results;
+}
+
+/**
+ * 統一檔案匯入接口：依據副檔名解析 GPX, KML, KMZ, CSV (Google Takeout)
  * @param {File} file
  * @returns {Promise<Array<{ name: string, lat: number, lng: number, desc?: string }>>}
  */
@@ -521,7 +720,9 @@ export async function parseGeoFile(file) {
         return parseGpx(text);
     } else if (fileName.endsWith('.kml')) {
         return parseKml(text);
+    } else if (fileName.endsWith('.csv')) {
+        return parseGoogleTakeoutCsv(text);
     } else {
-        throw new Error(`不支援的檔案格式：${file.name} (僅支援 .gpx, .kml, .kmz)`);
+        throw new Error(`不支援的檔案格式：${file.name} (僅支援 .gpx, .kml, .kmz, .csv)`);
     }
 }

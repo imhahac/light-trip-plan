@@ -5,9 +5,10 @@
  * 或在未設定 Worker 時自動降級為系統原生分享 (Web Share API) 與剪貼簿文字摘要。
  */
 import React, { useState } from 'react';
-import { Share2, Check, Loader2 } from 'lucide-react';
+import { Share2, Check, Loader2, SlidersHorizontal } from 'lucide-react';
 import { toast } from 'sonner';
-import { createShareSnapshot } from '../services/shareService';
+import { createShareSnapshot, buildFilteredShareSnapshot } from '../services/shareService';
+import { packingRepo, expenseRepo } from '../services/db';
 import { useFilterContext } from '../contexts/FilterContext';
 import { useTicketDataContext } from '../contexts/DataContext';
 import { useTrek } from '../contexts/TrekContext';
@@ -17,6 +18,13 @@ const PROXY_BASE = (import.meta.env.VITE_FLIGHT_PROXY_URL || 'https://flight-api
 export default function ShareButton({ variant = 'default', className = '' }) {
     const [isSharing, setIsSharing] = useState(false);
     const [copied, setCopied] = useState(false);
+    const [showOptions, setShowOptions] = useState(false);
+    const [shareScopes, setShareScopes] = useState({
+        includeMap: true,
+        includeBookings: true,
+        includePacking: false,
+        includeCosts: false,
+    });
     const { filteredItinerary, safeHotels, safeActivities } = useFilterContext();
     const { tripLabels } = useTicketDataContext();
     const { activeTrip, dayPlans, reservations } = useTrek();
@@ -43,18 +51,29 @@ export default function ShareButton({ variant = 'default', className = '' }) {
                     };
                 }
 
-                const snapshot = {
-                    trip: tripToShare,
-                    itinerary: filteredItinerary,
-                    tripLabels,
-                    hotels: safeHotels,
-                    activities: safeActivities,
-                    dayPlans: dayPlans || [],
-                    reservations: reservations || [],
-                    createdAt: new Date().toISOString(),
-                };
+                const [packingItems, expenses] = await Promise.all([
+                    shareScopes.includePacking && tripToShare?.id ? packingRepo.getByTrip(tripToShare.id).catch(() => []) : Promise.resolve([]),
+                    shareScopes.includeCosts && tripToShare?.id ? expenseRepo.getByTrip(tripToShare.id).catch(() => []) : Promise.resolve([]),
+                ]);
+
+                const snapshot = buildFilteredShareSnapshot(
+                    {
+                        trip: tripToShare,
+                        itinerary: filteredItinerary,
+                        tripLabels,
+                        hotels: safeHotels,
+                        activities: safeActivities,
+                        dayPlans: dayPlans || [],
+                        reservations: reservations || [],
+                        packingItems,
+                        expenses,
+                        createdAt: new Date().toISOString(),
+                    },
+                    shareScopes
+                );
 
                 const id = await createShareSnapshot(snapshot);
+                setShowOptions(false);
                 const shareUrl = `${window.location.origin}${window.location.pathname}?view=${id}`;
 
                 await navigator.clipboard.writeText(shareUrl);
@@ -119,23 +138,83 @@ export default function ShareButton({ variant = 'default', className = '' }) {
             : 'bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-100';
 
     return (
-        <button
-            onClick={handleShare}
-            disabled={isSharing}
-            title="分享此行程連結給好友"
-            className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-bold rounded-lg border transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${
-                isHeader ? headerClasses : defaultClasses
-            } ${className}`}
-        >
-            {isSharing ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : copied ? (
-                <Check className="w-3.5 h-3.5 text-emerald-400" />
-            ) : (
-                <Share2 className="w-3.5 h-3.5" />
+        <div className="relative inline-flex items-center gap-1">
+            <button
+                onClick={handleShare}
+                disabled={isSharing}
+                title="分享此行程連結給好友"
+                className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-bold rounded-lg border transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${
+                    isHeader ? headerClasses : defaultClasses
+                } ${className}`}
+            >
+                {isSharing ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : copied ? (
+                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                ) : (
+                    <Share2 className="w-3.5 h-3.5" />
+                )}
+                <span>{copied ? '已複製！' : isSharing ? '建立中...' : '分享行程'}</span>
+            </button>
+            <button
+                type="button"
+                onClick={() => setShowOptions((v) => !v)}
+                title="設定公開分享包含區塊（地圖/預訂/行李/費用）"
+                className={`p-1 rounded-lg border text-xs transition ${isHeader ? headerClasses : defaultClasses}`}
+            >
+                <SlidersHorizontal className="w-3.5 h-3.5" />
+            </button>
+
+            {showOptions && (
+                <div className="absolute right-0 top-9 z-50 w-56 bg-white border border-slate-200 rounded-xl shadow-2xl p-3 text-xs text-slate-700 space-y-2">
+                    <div className="font-extrabold text-slate-900 border-b border-slate-100 pb-1.5">公開分享範圍設定</div>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                            type="checkbox"
+                            checked={shareScopes.includeMap}
+                            onChange={(e) => setShareScopes((p) => ({ ...p, includeMap: e.target.checked }))}
+                            className="rounded text-indigo-600"
+                        />
+                        <span>🗺️ 每日行程與地圖</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                            type="checkbox"
+                            checked={shareScopes.includeBookings}
+                            onChange={(e) => setShareScopes((p) => ({ ...p, includeBookings: e.target.checked }))}
+                            className="rounded text-indigo-600"
+                        />
+                        <span>✈️ 預訂憑證 (機票/飯店)</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                            type="checkbox"
+                            checked={shareScopes.includePacking}
+                            onChange={(e) => setShareScopes((p) => ({ ...p, includePacking: e.target.checked }))}
+                            className="rounded text-indigo-600"
+                        />
+                        <span>🎒 行李清單</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                            type="checkbox"
+                            checked={shareScopes.includeCosts}
+                            onChange={(e) => setShareScopes((p) => ({ ...p, includeCosts: e.target.checked }))}
+                            className="rounded text-indigo-600"
+                        />
+                        <span>💰 費用與預算總覽</span>
+                    </label>
+                    <button
+                        type="button"
+                        onClick={handleShare}
+                        disabled={isSharing}
+                        className="w-full mt-1 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold"
+                    >
+                        建立並複製分享連結
+                    </button>
+                </div>
             )}
-            <span>{copied ? '已複製！' : isSharing ? '建立中...' : '分享行程'}</span>
-        </button>
+        </div>
     );
 }
 

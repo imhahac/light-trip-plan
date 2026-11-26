@@ -46,7 +46,8 @@ export async function closeAndDeleteDB() {
     });
 }
 
-const SYNCABLE_IDB_STORES = [
+// 明確排除 SYNC_OUTBOX（裝置本機未送出佇列不可污染跨裝置 Drive 備份）
+export const SYNCABLE_IDB_STORES = [
     STORES.TRIPS,
     STORES.DAY_PLANS,
     STORES.PLACE_ITEMS,
@@ -56,6 +57,9 @@ const SYNCABLE_IDB_STORES = [
     STORES.PACKING_ITEMS,
     STORES.TODOS,
     STORES.ATTACHED_FILES,
+    STORES.SETTLEMENT_LOGS,
+    STORES.FILE_TRASH,
+    STORES.COLLAB_ITEMS,
 ];
 
 /**
@@ -353,4 +357,34 @@ export const backupRepo = {
     },
     get: (id) => getById(STORES.BACKUPS, id),
     delete: (id) => deleteItem(STORES.BACKUPS, id)
+};
+
+export const settlementLogRepo = {
+    getByTrip: (tripId) => getByIndex(STORES.SETTLEMENT_LOGS, 'tripId', tripId),
+    save: (entry) => putItem(STORES.SETTLEMENT_LOGS, entry),
+    delete: (id) => deleteItem(STORES.SETTLEMENT_LOGS, id),
+};
+
+export const fileTrashRepo = {
+    getByTrip: (tripId) => getByIndex(STORES.FILE_TRASH, 'tripId', tripId),
+    getAll: () => getAll(STORES.FILE_TRASH),
+    save: (item) => putItem(STORES.FILE_TRASH, { ...item, trashedAt: item.trashedAt || Date.now() }),
+    delete: (id) => deleteItem(STORES.FILE_TRASH, id),
+};
+
+export const syncOutboxRepo = {
+    getAll: () => getAll(STORES.SYNC_OUTBOX),
+    getPending: () => getByIndex(STORES.SYNC_OUTBOX, 'status', 'pending'),
+    save: (item) => putItem(STORES.SYNC_OUTBOX, { ...item, status: item.status || 'pending', createdAt: item.createdAt || Date.now() }),
+    delete: (id) => deleteItem(STORES.SYNC_OUTBOX, id),
+    clearAll: async () => {
+        const db = await getDB();
+        await db.clear(STORES.SYNC_OUTBOX);
+    },
+};
+
+export const collabItemRepo = {
+    getByTrip: (tripId) => getByIndex(STORES.COLLAB_ITEMS, 'tripId', tripId),
+    save: (item) => putItem(STORES.COLLAB_ITEMS, item),
+    delete: (id) => deleteItem(STORES.COLLAB_ITEMS, id),
 };

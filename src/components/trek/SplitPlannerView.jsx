@@ -19,12 +19,19 @@ import {
     ArchiveRestore,
     Share2,
     Download,
-    X
+    X,
+    Mountain,
+    MessageSquare
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { useTrek } from '../../contexts/TrekContext';
 import { getTripStatus, isTripArchivedOrEnded } from '../../services/trips/tripStatusService';
 import DayPlanTimeline from './DayPlanTimeline';
 import MapLibreView from './MapLibreView';
+import ElevationProfileChart from './ElevationProfileChart';
+import CollabPanel from './CollabPanel';
+import { parseGpxTrack } from '../../services/import/geoImportService';
+import { generateId } from '../../utils/id';
 import ReservationManager from './ReservationManager';
 import TripTimeline from '../TripTimeline';
 import ShareButton from '../ShareButton';
@@ -44,7 +51,7 @@ import { useLocalStorage } from '../../hooks/useLocalStorage';
 export default function SplitPlannerView({ defaultSubTab = 'daily' }) {
     const { 
         activeTrip, reservations, dayPlans, viewMode, setViewMode, updateTrip, deleteTrip, toggleArchiveTrip, trips,
-        isSharedView, importSharedTripToLocal, exitSharedView, isLoading
+        isSharedView, importSharedTripToLocal, exitSharedView, isLoading, refreshTrips
     } = useTrek();
     const { activeTab } = useUIContext();
 
@@ -56,8 +63,12 @@ export default function SplitPlannerView({ defaultSubTab = 'daily' }) {
         return defaultSubTab;
     }, [activeTab, defaultSubTab]);
     const [mobileActiveView, setMobileActiveView] = useLocalStorage(STORAGE_KEYS.SPLIT_MOBILE_VIEW, 'planner'); // 'planner' | 'map'
+    const [selectedDayByTrip] = useLocalStorage(STORAGE_KEYS.PLANNER_SELECTED_DAY_BY_TRIP, {});
     const [selectedPlaces, setSelectedPlaces] = useState([]);
     const [routeGeometry, setRouteGeometry] = useState(null);
+    const [isFullTripMode, setIsFullTripMode] = useState(false);
+    const [gpxTrack, setGpxTrack] = useState(null);
+    const [showCollabPanel, setShowCollabPanel] = useState(false);
 
     // 旅程編輯 Modal 狀態
     const [isEditTripModalOpen, setIsEditTripModalOpen] = useState(false);
@@ -117,13 +128,63 @@ export default function SplitPlannerView({ defaultSubTab = 'daily' }) {
         return getUnifiedReservations(activeTrip, reservations, tickets, rawHotels, activities);
     }, [activeTrip, reservations, tickets, rawHotels, activities]);
 
-    // 當切換到全景時間軸時，抓取該旅程所有景點呈現於右側地圖
+    // 當切換到全景時間軸或全行程總覽模式時，抓取該旅程所有景點呈現於右側地圖
     const loadAllTripPlaces = useCallback(async () => {
         if (!activeTrip) return;
         const allPlaces = await placeItemRepo.getByTrip(activeTrip.id);
         setSelectedPlaces(allPlaces);
         setRouteGeometry(null);
     }, [activeTrip]);
+
+    const handleToggleFullTrip = useCallback(async () => {
+        setIsFullTripMode((prev) => {
+            const next = !prev;
+            if (next) loadAllTripPlaces();
+            return next;
+        });
+    }, [loadAllTripPlaces]);
+
+    const handleAddPoiToDay = useCallback(async (poi) => {
+        if (!activeTrip || !poi) return;
+        const targetDayIndex = selectedDayByTrip?.[activeTrip.id] ?? 0;
+        const existing = await placeItemRepo.getByTrip(activeTrip.id);
+        const dayItems = existing.filter((p) => (p.dayIndex ?? 0) === targetDayIndex);
+        const newPlace = {
+            id: generateId('place'),
+            tripId: activeTrip.id,
+            dayIndex: targetDayIndex,
+            orderIndex: dayItems.length,
+            name: poi.name || '未命名地點',
+            lat: Number(poi.lat),
+            lng: Number(poi.lng),
+            address: poi.openingHours ? `營業時間: ${poi.openingHours}` : '',
+            category: poi.category || 'sightseeing',
+            isLocked: false,
+            notes: '',
+        };
+        await placeItemRepo.save(newPlace);
+        await refreshTrips(activeTrip.id);
+        toast.success(`已將「${newPlace.name}」加入 Day ${targetDayIndex + 1}`);
+    }, [activeTrip, selectedDayByTrip, refreshTrips]);
+
+    const handleUploadGpxTrack = async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        try {
+            const text = await file.text();
+            const parsed = parseGpxTrack(text);
+            if (!parsed.points.length) {
+                toast.error('此 GPX 檔案中找不到軌跡點 (<trkpt>)');
+                return;
+            }
+            setGpxTrack(parsed);
+            toast.success(`已載入 GPX 軌跡：${parsed.name || file.name} (${parsed.totalDistanceKm} km)`);
+        } catch (err) {
+            toast.error(`GPX 解析失敗：${err.message}`);
+        } finally {
+            e.target.value = '';
+        }
+    };
 
     useEffect(() => {
         if (currentSubTab === 'timeline') {
@@ -242,6 +303,21 @@ export default function SplitPlannerView({ defaultSubTab = 'daily' }) {
                                 <div className="flex items-center justify-between gap-3 mb-1">
                                     <h2 className="text-xl font-black tracking-wide truncate">{activeTrip.title}</h2>
                                     <div className="flex items-center gap-1.5 shrink-0">
+                                        {!isSharedView && (
+                                            <button
+                                                type="button"
+                                                onClick={() => setShowCollabPanel((v) => !v)}
+                                                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1 border ${
+                                                    showCollabPanel
+                                                        ? 'bg-emerald-500 text-white border-emerald-400'
+                                                        : 'bg-white/10 hover:bg-white/20 text-white border-white/20'
+                                                }`}
+                                                title="開啟非同步旅伴共筆（筆記、連結、投票、What's Next）"
+                                            >
+                                                <MessageSquare className="w-3.5 h-3.5" />
+                                                <span className="hidden sm:inline">旅伴共筆</span>
+                                            </button>
+                                        )}
                                         <ShareButton variant="header" />
                                         {isSharedView ? (
                                             <button
@@ -332,6 +408,11 @@ export default function SplitPlannerView({ defaultSubTab = 'daily' }) {
                             </div>
                         </div>
 
+                        {/* 非同步旅伴共筆面板（筆記 / 連結 / 投票 / What's Next） */}
+                        {showCollabPanel && !isSharedView && (
+                            <CollabPanel tripId={activeTrip.id} />
+                        )}
+
                         {/* SubTab 核心內容區 */}
                         {currentSubTab === 'daily' && (
                             <DayPlanTimeline 
@@ -382,17 +463,42 @@ export default function SplitPlannerView({ defaultSubTab = 'daily' }) {
                                     <MapPin className="w-4 h-4 text-indigo-600" />
                                     <span>互動地圖視窗 (向量圖資 & 路線導航)</span>
                                 </span>
-                                <button
-                                    onClick={() => setViewMode(viewMode === 'map-only' ? 'split' : 'map-only')}
-                                    className="p-1 rounded hover:bg-slate-200 text-slate-500 transition"
-                                    title={viewMode === 'map-only' ? '恢復雙欄' : '全螢幕地圖'}
-                                >
-                                    {viewMode === 'map-only' ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
-                                </button>
+                                <div className="flex items-center gap-1.5">
+                                    <label
+                                        className="px-2 py-0.5 rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 text-[11px] font-bold cursor-pointer flex items-center gap-1 transition"
+                                        title="載入 GPX 戶外軌跡並檢視海拔高度剖面圖"
+                                    >
+                                        <Mountain className="w-3 h-3" />
+                                        <span>GPX 剖面</span>
+                                        <input type="file" accept=".gpx" className="hidden" onChange={handleUploadGpxTrack} />
+                                    </label>
+                                    <button
+                                        onClick={() => setViewMode(viewMode === 'map-only' ? 'split' : 'map-only')}
+                                        className="p-1 rounded hover:bg-slate-200 text-slate-500 transition"
+                                        title={viewMode === 'map-only' ? '恢復雙欄' : '全螢幕地圖'}
+                                    >
+                                        {viewMode === 'map-only' ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+                                    </button>
+                                </div>
                             </div>
                             <div className="flex-1 w-full relative min-h-0 h-full">
-                                <MapLibreView places={selectedPlaces} routeGeometry={routeGeometry} />
+                                <MapLibreView
+                                    places={selectedPlaces}
+                                    routeGeometry={routeGeometry}
+                                    gpxTrackPoints={gpxTrack?.points || null}
+                                    isFullTripMode={isFullTripMode}
+                                    onToggleFullTrip={handleToggleFullTrip}
+                                    onAddPoiToDay={handleAddPoiToDay}
+                                />
                             </div>
+                            {gpxTrack && (
+                                <div className="p-2.5 bg-slate-50 border-t border-slate-200 shrink-0">
+                                    <ElevationProfileChart
+                                        plannedTrack={gpxTrack}
+                                        onClearPlanned={() => setGpxTrack(null)}
+                                    />
+                                </div>
+                            )}
                         </div>
                     </div>
                 )}

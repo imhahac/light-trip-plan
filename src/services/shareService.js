@@ -8,6 +8,41 @@
 const PROXY_BASE = (import.meta.env.VITE_FLIGHT_PROXY_URL || 'https://flight-api-proxy.imhahac.workers.dev').replace(/\/+$/, '');
 
 /**
+ * 細粒度公開分享資料裁剪（送出至公開 KV 前即剝離未勾選區塊，確保未授權資料不會外流）
+ * @param {Object} raw
+ * @param {{ includeMap?: boolean, includeBookings?: boolean, includePacking?: boolean, includeCosts?: boolean }} options
+ */
+export function buildFilteredShareSnapshot(raw, options = {}) {
+    const {
+        includeMap = true,
+        includeBookings = true,
+        includePacking = false,
+        includeCosts = false,
+    } = options;
+
+    const cleanTrip = raw.trip ? { ...raw.trip } : null;
+    if (cleanTrip && !includeCosts) {
+        delete cleanTrip.budget;
+    }
+
+    return {
+        trip: cleanTrip,
+        shareScopes: { includeMap, includeBookings, includePacking, includeCosts },
+        tripLabels: raw.tripLabels || {},
+        dayPlans: includeMap ? (raw.dayPlans || []) : [],
+        itinerary: includeBookings ? (raw.itinerary || []) : [],
+        hotels: includeBookings ? (raw.hotels || []) : [],
+        activities: includeMap ? (raw.activities || []) : [],
+        reservations: includeBookings
+            ? (raw.reservations || []).map((r) => (includeCosts ? r : { ...r, cost: undefined }))
+            : [],
+        packingItems: includePacking ? (raw.packingItems || []) : [],
+        expenses: includeCosts ? (raw.expenses || []) : [],
+        createdAt: raw.createdAt || new Date().toISOString(),
+    };
+}
+
+/**
  * 將行程快照發送到 Worker，儲存至 KV，回傳 UUID。
  * @param {Object} snapshot - { trip, itinerary, tripLabels, hotels, activities, dayPlans, reservations }
  * @returns {Promise<string>} 分享 UUID
