@@ -31,7 +31,7 @@ import MapLibreView from './MapLibreView';
 import ElevationProfileChart from './ElevationProfileChart';
 import CollabPanel from './CollabPanel';
 import { parseGpxTrack } from '../../services/import/geoImportService';
-import { generateId } from '../../utils/id';
+import { createStableId } from '../../utils/id';
 import ReservationManager from './ReservationManager';
 import TripTimeline from '../TripTimeline';
 import ShareButton from '../ShareButton';
@@ -150,7 +150,7 @@ export default function SplitPlannerView({ defaultSubTab = 'daily' }) {
         const existing = await placeItemRepo.getByTrip(activeTrip.id);
         const dayItems = existing.filter((p) => (p.dayIndex ?? 0) === targetDayIndex);
         const newPlace = {
-            id: generateId('place'),
+            id: createStableId('place_'),
             tripId: activeTrip.id,
             dayIndex: targetDayIndex,
             orderIndex: dayItems.length,

@@ -8,7 +8,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { StickyNote, Link as LinkIcon, BarChart2, ListTodo, Plus, Trash2, ThumbsUp, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 import { collabItemRepo } from '../../services/db';
-import { generateId } from '../../utils/id';
+import { createStableId } from '../../utils/id';
 
 const KINDS = [
     { key: 'note', label: '共用筆記', icon: StickyNote },
@@ -43,7 +43,7 @@ export default function CollabPanel({ tripId, onManualSync = null }) {
         e.preventDefault();
         if (!tripId || !title.trim()) return;
         const entry = {
-            id: generateId('collab'),
+            id: createStableId('collab_'),
             tripId,
             kind: activeKind,
             title: title.trim(),
