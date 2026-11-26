@@ -474,11 +474,35 @@ export default function DayPlanTimeline({ onSelectDayPlaces, onRouteCalculated, 
             return;
         }
         setIsQueryingTransit(true);
-        const from = activeDayPlaces[0];
-        const to = activeDayPlaces[activeDayPlaces.length - 1];
-        const res = await queryPublicTransitRoute(from, to);
-        setTransitResult({ ...res, fromName: from.name, toName: to.name });
-        setIsQueryingTransit(false);
+        try {
+            const maxLegs = Math.min(activeDayPlaces.length - 1, 10);
+            const legPairs = [];
+            for (let i = 0; i < maxLegs; i++) {
+                legPairs.push({
+                    legIndex: i + 1,
+                    from: activeDayPlaces[i],
+                    to: activeDayPlaces[i + 1],
+                });
+            }
+            const results = await Promise.all(
+                legPairs.map(async ({ legIndex, from, to }) => {
+                    const res = await queryPublicTransitRoute(from, to);
+                    return {
+                        legIndex,
+                        fromName: from.name || `站點 ${legIndex}`,
+                        toName: to.name || `站點 ${legIndex + 1}`,
+                        ...res,
+                    };
+                })
+            );
+            setTransitResult({
+                totalLegs: results.length,
+                truncated: activeDayPlaces.length - 1 > maxLegs,
+                legs: results,
+            });
+        } finally {
+            setIsQueryingTransit(false);
+        }
     };
 
     const roadTripSchedule = useMemo(() => {
@@ -905,43 +929,64 @@ export default function DayPlanTimeline({ onSelectDayPlaces, onRouteCalculated, 
                 </div>
             )}
 
-            {/* 3.3 Transitous 大眾運輸規劃結果卡片 */}
-            {transitResult && (
-                <div className="bg-sky-50 border border-sky-200 rounded-xl p-3 text-xs space-y-2">
-                    <div className="flex items-center justify-between">
+            {/* 3.3 Transitous 逐段大眾運輸規劃結果卡片 (1➔2➔3...N) */}
+            {transitResult && Array.isArray(transitResult.legs) && (
+                <div className="bg-sky-50 border border-sky-200 rounded-xl p-3 text-xs space-y-2.5">
+                    <div className="flex items-center justify-between border-b border-sky-200/70 pb-2">
                         <span className="font-extrabold text-sky-900 flex items-center gap-1.5">
                             <Train className="w-4 h-4 text-sky-600" />
-                            <span>{transitResult.fromName} ➔ {transitResult.toName}</span>
+                            <span>當日逐段大眾運輸規劃（共 {transitResult.totalLegs} 段接駁）</span>
                         </span>
-                        <button type="button" onClick={() => setTransitResult(null)} className="text-sky-500 hover:text-sky-800 font-bold">&times;</button>
+                        <button type="button" onClick={() => setTransitResult(null)} className="text-sky-500 hover:text-sky-800 font-bold text-sm leading-none">&times;</button>
                     </div>
-                    {transitResult.ok && transitResult.itineraries.length > 0 ? (
-                        <div className="space-y-1.5">
-                            {transitResult.itineraries.map((it, i) => (
-                                <div key={i} className="bg-white rounded-lg p-2 border border-sky-100 flex flex-wrap items-center justify-between gap-2">
-                                    <div className="font-bold text-slate-800">
-                                        方案 {i + 1}：約 {it.durationMin} 分鐘 · 轉乘 {it.transfers} 次
+
+                    <div className="space-y-2">
+                        {transitResult.legs.map((legRes) => (
+                            <div key={legRes.legIndex} className="bg-white rounded-lg p-2.5 border border-sky-100 space-y-1.5">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <div className="font-extrabold text-slate-800 flex items-center gap-1.5 min-w-0">
+                                        <span className="px-1.5 py-0.5 rounded bg-sky-100 text-sky-800 font-mono text-[10px] shrink-0">
+                                            {legRes.legIndex} ➔ {legRes.legIndex + 1}
+                                        </span>
+                                        <span className="truncate">{legRes.fromName} ➔ {legRes.toName}</span>
                                     </div>
-                                    <div className="flex flex-wrap gap-1 text-[10px]">
-                                        {it.legs.map((leg, li) => (
-                                            <span key={li} className="px-1.5 py-0.5 rounded bg-sky-100 text-sky-800 font-semibold">
-                                                {leg.mode}{leg.routeShortName ? ` ${leg.routeShortName}` : ''} ({leg.durationMin}m)
-                                            </span>
+                                    {legRes.fallbackUrl && (
+                                        <a
+                                            href={legRes.fallbackUrl}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="px-2 py-0.5 bg-sky-600 text-white rounded-md text-[11px] font-bold hover:bg-sky-700 shrink-0"
+                                        >
+                                            Google 大眾運輸
+                                        </a>
+                                    )}
+                                </div>
+
+                                {legRes.ok && legRes.itineraries?.length > 0 ? (
+                                    <div className="space-y-1">
+                                        {legRes.itineraries.slice(0, 2).map((it, i) => (
+                                            <div key={i} className="bg-sky-50/60 rounded p-1.5 flex flex-wrap items-center justify-between gap-1.5 text-[11px]">
+                                                <span className="font-bold text-slate-700">
+                                                    方案 {i + 1}：約 {it.durationMin} 分 · 轉乘 {it.transfers} 次
+                                                </span>
+                                                <div className="flex flex-wrap gap-1 text-[10px]">
+                                                    {it.legs.map((sub, li) => (
+                                                        <span key={li} className="px-1.5 py-0.5 rounded bg-sky-100 text-sky-800 font-semibold">
+                                                            {sub.mode}{sub.routeShortName ? ` ${sub.routeShortName}` : ''} ({sub.durationMin}m)
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                            </div>
                                         ))}
                                     </div>
-                                </div>
-                            ))}
-                        </div>
-                    ) : (
-                        <div className="flex items-center justify-between gap-2 text-sky-800">
-                            <span>{t('transit.fallback', '查無即時轉乘資料，改以 Google Maps 開啟')}</span>
-                            {transitResult.fallbackUrl && (
-                                <a href={transitResult.fallbackUrl} target="_blank" rel="noopener noreferrer" className="px-2.5 py-1 bg-sky-600 text-white rounded-md font-bold hover:bg-sky-700 shrink-0">
-                                    開啟 Google 大眾運輸
-                                </a>
-                            )}
-                        </div>
-                    )}
+                                ) : (
+                                    <div className="text-[11px] text-slate-500">
+                                        {t('transit.fallback', '查無即時轉乘資料，可點擊右側按鈕於 Google Maps 開啟此段大眾運輸')}
+                                    </div>
+                                )}
+                            </div>
+                        ))}
+                    </div>
                 </div>
             )}
 

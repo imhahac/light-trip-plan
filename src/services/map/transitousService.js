@@ -10,9 +10,19 @@ import { isEffectivelyOffline } from '../sync/offlineModeService';
 const TRANSITOUS_API = 'https://api.transitous.org/api/v1/plan';
 const TIMEOUT_MS = 8000;
 
+function formatGoogleEndpoint(place) {
+    if (!place) return '';
+    if (Number.isFinite(Number(place.lat)) && Number.isFinite(Number(place.lng)) && !(Number(place.lat) === 0 && Number(place.lng) === 0)) {
+        return `${place.lat},${place.lng}`;
+    }
+    return encodeURIComponent(place.address || place.name || '');
+}
+
 export function getGoogleMapsTransitUrl(from, to) {
-    if (!from || !to) return null;
-    return `https://www.google.com/maps/dir/?api=1&origin=${from.lat},${from.lng}&destination=${to.lat},${to.lng}&travelmode=transit`;
+    const origin = formatGoogleEndpoint(from);
+    const destination = formatGoogleEndpoint(to);
+    if (!origin || !destination) return null;
+    return `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}&travelmode=transit`;
 }
 
 /**
