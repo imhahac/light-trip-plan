@@ -7,6 +7,7 @@
  */
 
 import { logger } from '../../utils/logger';
+import { isEffectivelyOffline } from '../sync/offlineModeService';
 
 /**
  * OpenStreetMap Nominatim 地點搜尋
@@ -73,6 +74,9 @@ export async function fetchViewportPOIs(bbox, category = 'sights', limit = 25) {
     const cached = poiCache.get(cacheKey);
     if (cached && Date.now() - cached.ts < POI_CACHE_TTL_MS) {
         return cached.items;
+    }
+    if (isEffectivelyOffline()) {
+        return cached?.items || [];
     }
 
     const now = Date.now();

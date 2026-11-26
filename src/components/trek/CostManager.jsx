@@ -702,6 +702,8 @@ export default function CostManager() {
         setFormCurrency(baseCurrency || 'TWD');
         setFormDate(new Date().toISOString().slice(0, 10));
         setFormPaidBy('我');
+        setUseMultiPayer(false);
+        setMultiPayerAmounts({});
         setSplitMode('equal');
         setSelectedMembers(['我', '旅伴A', '旅伴B']);
         setMemberWeights({ '我': 1, '旅伴A': 1, '旅伴B': 1 });
@@ -718,6 +720,20 @@ export default function CostManager() {
         setFormCurrency(exp.currency || baseCurrency || 'TWD');
         setFormDate(exp.date || (exp.createdAt ? new Date(exp.createdAt).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10)));
         setFormPaidBy(exp.paidBy || '我');
+        if (Array.isArray(exp.payers) && exp.payers.length > 0) {
+            const rate = Number(exp.rateToTripBase) || 1;
+            const restored = {};
+            exp.payers.forEach((p) => {
+                if (p?.userId) {
+                    restored[p.userId] = String(Math.round((Number(p.amount) / rate) * 100) / 100);
+                }
+            });
+            setUseMultiPayer(true);
+            setMultiPayerAmounts(restored);
+        } else {
+            setUseMultiPayer(false);
+            setMultiPayerAmounts({});
+        }
         setSplitMode(exp.splitType || 'equal');
         if (Array.isArray(exp.participants) && exp.participants.length > 0) {
             setSelectedMembers(exp.participants);

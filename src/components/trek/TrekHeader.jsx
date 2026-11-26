@@ -45,8 +45,10 @@ import ExportImportModal from './ExportImportModal';
 import ConflictResolutionModal from './ConflictResolutionModal';
 import AppearanceSettingsModal from './AppearanceSettingsModal';
 import QuickHelpModal from './QuickHelpModal';
+import { useI18n } from '../../i18n';
 
 export default function TrekHeader() {
+    const { t } = useI18n();
     const { 
         trips, 
         activeTrip, 
@@ -441,14 +443,14 @@ export default function TrekHeader() {
                         }`}
                     >
                         {manualOffline ? <WifiOff className="w-3.5 h-3.5" /> : <Wifi className="w-3.5 h-3.5 text-emerald-400" />}
-                        <span className="hidden md:inline">{manualOffline ? '離線模式' : '線上'}</span>
+                        <span className="hidden md:inline">{manualOffline ? t('header.offline', '離線模式') : t('header.online', '線上')}</span>
                     </button>
 
                     {/* 外觀主題與語系設定 */}
                     <button
                         type="button"
                         onClick={() => setIsAppearanceOpen(true)}
-                        title="外觀主題（深淺色 / 7 色 / 字體 / 中英日語系）"
+                        title={t('appearance.title', '外觀主題與語系設定')}
                         className="p-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-slate-300 hover:text-white transition"
                     >
                         <Palette className="w-3.5 h-3.5" />
@@ -458,7 +460,7 @@ export default function TrekHeader() {
                     <button
                         type="button"
                         onClick={() => setIsHelpOpen(true)}
-                        title="快速上手指南與快捷鍵 (?)"
+                        title={t('help.title', '快速上手指南')}
                         className="p-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-slate-300 hover:text-white transition"
                     >
                         <HelpCircle className="w-3.5 h-3.5" />
@@ -471,7 +473,7 @@ export default function TrekHeader() {
                         className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-xs font-bold text-white transition shadow-sm"
                     >
                         <Share2 className="w-3.5 h-3.5" />
-                        <span className="hidden sm:inline">匯入匯出 & 手冊</span>
+                        <span className="hidden sm:inline">{t('header.exportImport', '匯入匯出 & 手冊')}</span>
                     </button>
 
                     {/* Google 帳號與雲端同步中心 (未設定 Client ID 或唯讀分享模式時自動隱藏) */}

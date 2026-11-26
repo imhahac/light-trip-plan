@@ -7,6 +7,7 @@
  */
 
 import { STORAGE_KEYS } from '../../constants/storageKeys.js';
+import { isEffectivelyOffline } from '../sync/offlineModeService.js';
 
 const DEFAULT_WORKER_BASE = (
     (typeof import.meta !== 'undefined' && import.meta.env?.VITE_FLIGHT_PROXY_URL) ||
@@ -105,6 +106,9 @@ export async function pullFromIngestApi({
     channel = 'default',
     sinceRevision = -1,
 }) {
+    if (isEffectivelyOffline()) {
+        return { success: true, channel, hasUpdate: false, offlineSkipped: true };
+    }
     const base = String(endpointUrl || DEFAULT_WORKER_BASE).replace(/\/+$/, '');
     const headers = buildAuthHeaders(apiToken);
     const params = new URLSearchParams({
@@ -142,6 +146,17 @@ export async function pushToIngestApi({
     payload,
     mode = 'merge',
 }) {
+    if (isEffectivelyOffline()) {
+        const { enqueueOfflineWrite } = await import('../sync/offlineOutboxService');
+        const entry = await enqueueOfflineWrite({
+            channel,
+            mode,
+            payload,
+            baseRevision: getLastSyncedRevision(channel),
+            label: `離線寫入 (${channel})`,
+        });
+        return { success: true, channel, mode, queuedOffline: true, outboxId: entry.id, idempotencyKey: entry.idempotencyKey };
+    }
     const base = String(endpointUrl || DEFAULT_WORKER_BASE).replace(/\/+$/, '');
     const headers = buildAuthHeaders(apiToken);
     const params = new URLSearchParams({

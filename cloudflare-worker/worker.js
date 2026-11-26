@@ -501,6 +501,7 @@ export function mergeIngestPayload(existingPayload = {}, incomingRaw = {}, mode 
     ["expense", "expenses"],
     ["packingItem", "packingItems"],
     ["todo", "todos"],
+    ["collabItem", "collabItems"],
   ];
 
   for (const [singular, plural] of singularMappings) {
@@ -527,6 +528,7 @@ export function mergeIngestPayload(existingPayload = {}, incomingRaw = {}, mode 
     ["expenses", "exp"],
     ["packingItems", "pack"],
     ["todos", "todo"],
+    ["collabItems", "collab"],
   ];
 
   const merged = {

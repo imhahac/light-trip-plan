@@ -188,33 +188,43 @@ export default function DayPlanTimeline({ onSelectDayPlaces, onRouteCalculated, 
         }
     };
 
-    // 快速換日（直接由卡片選取）
+    // 快速換日（直接由卡片選取，支援 Ctrl+Z 復原）
     const handleQuickMoveDay = async (place, targetDayIndex) => {
         const originDayIndex = place.dayIndex ?? selectedDayIndex;
         if (targetDayIndex === originDayIndex) return;
 
         const targetPlaces = dayPlacesMap[targetDayIndex] || [];
+        const beforePlace = { ...place, dayIndex: originDayIndex };
         const updated = {
             ...place,
             dayIndex: targetDayIndex,
             orderIndex: targetPlaces.length
         };
 
-        await placeItemRepo.save(updated);
-
-        setDayPlacesMap(prev => {
-            const updatedOrigin = (prev[originDayIndex] || []).filter(p => p.id !== place.id);
-            const updatedTarget = [...(prev[targetDayIndex] || []), updated];
-            return {
-                ...prev,
-                [originDayIndex]: updatedOrigin,
-                [targetDayIndex]: updatedTarget
-            };
-        });
+        await undoManagerRef.current.push({
+            label: `跨天移動 (${place.name})`,
+            execute: async () => {
+                await placeItemRepo.save(updated);
+                setDayPlacesMap((prev) => ({
+                    ...prev,
+                    [originDayIndex]: (prev[originDayIndex] || []).filter((p) => p.id !== place.id),
+                    [targetDayIndex]: [...(prev[targetDayIndex] || []).filter((p) => p.id !== place.id), updated],
+                }));
+            },
+            undo: async () => {
+                await placeItemRepo.save(beforePlace);
+                setDayPlacesMap((prev) => ({
+                    ...prev,
+                    [targetDayIndex]: (prev[targetDayIndex] || []).filter((p) => p.id !== place.id),
+                    [originDayIndex]: [...(prev[originDayIndex] || []).filter((p) => p.id !== place.id), beforePlace]
+                        .sort((a, b) => (a.orderIndex || 0) - (b.orderIndex || 0)),
+                }));
+            },
+        }, true);
 
         const targetDayInfo = tripDays[targetDayIndex];
         const dayLabel = targetDayInfo ? `Day ${targetDayInfo.dayIndex} (${targetDayInfo.date.slice(5)})` : `Day ${targetDayIndex + 1}`;
-        toast.success(`已將「${place.name}」移至 ${dayLabel}`);
+        toast.success(`已將「${place.name}」移至 ${dayLabel}（可按 Ctrl+Z 復原）`);
     };
 
     // 2. 載入景點資料
@@ -492,23 +502,31 @@ export default function DayPlanTimeline({ onSelectDayPlaces, onRouteCalculated, 
 
         setIsOptimizing(true);
         try {
+            const dayIdx = selectedDayIndex;
+            const beforeSnapshot = activeDayPlaces.map((p, idx) => ({ ...p, orderIndex: idx }));
             const { optimizedPlaces, improvedKm } = optimizeRouteWith2Opt(activeDayPlaces);
-            optimizedPlaces.forEach((p, idx) => { p.orderIndex = idx; });
-            await placeItemRepo.saveBatch(optimizedPlaces);
+            const afterSnapshot = optimizedPlaces.map((p, idx) => ({ ...p, orderIndex: idx }));
 
-            setDayPlacesMap(prev => ({
-                ...prev,
-                [selectedDayIndex]: optimizedPlaces
-            }));
+            await undoManagerRef.current.push({
+                label: '2-opt 智慧路徑最佳化',
+                execute: async () => {
+                    await placeItemRepo.saveBatch(afterSnapshot);
+                    setDayPlacesMap((prev) => ({ ...prev, [dayIdx]: afterSnapshot }));
+                },
+                undo: async () => {
+                    await placeItemRepo.saveBatch(beforeSnapshot);
+                    setDayPlacesMap((prev) => ({ ...prev, [dayIdx]: beforeSnapshot }));
+                },
+            }, true);
 
             if (improvedKm > 0) {
-                toast.success(`✨ 最佳化完成！預估減少 ${improvedKm} km 繞路距離`);
+                toast.success(`✨ 最佳化完成！預估減少 ${improvedKm} km 繞路距離（可按 Ctrl+Z 復原）`);
             } else {
                 toast.success('當前順序已是最優路徑！');
             }
 
             // 自動觸發 OSRM 繪製路線
-            handleCalculateOSRM(optimizedPlaces);
+            handleCalculateOSRM(afterSnapshot);
         } catch (err) {
             logger.error('TSP optimization error:', err);
         } finally {

@@ -5,6 +5,7 @@
 import React, { useState, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { HelpCircle, Search, X, Keyboard } from 'lucide-react';
+import { useI18n } from '../../i18n';
 
 const HELP_GUIDES = [
     {
@@ -46,6 +47,7 @@ const HELP_GUIDES = [
 ];
 
 export default function QuickHelpModal({ isOpen, onClose }) {
+    const { t } = useI18n();
     const [query, setQuery] = useState('');
 
     const filtered = useMemo(() => {
@@ -67,7 +69,7 @@ export default function QuickHelpModal({ isOpen, onClose }) {
                 <div className="p-4 border-b border-slate-100 flex items-center justify-between">
                     <h3 className="font-extrabold text-sm flex items-center gap-2">
                         <HelpCircle className="w-4 h-4 text-indigo-600" />
-                        <span>Light Trip Plan 快速上手指南 (離線可用)</span>
+                        <span>{t('help.title', 'Light Trip Plan 快速上手指南 (離線可用)')}</span>
                     </h3>
                     <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-700">
                         <X className="w-4 h-4" />
@@ -81,7 +83,7 @@ export default function QuickHelpModal({ isOpen, onClose }) {
                             type="text"
                             value={query}
                             onChange={(e) => setQuery(e.target.value)}
-                            placeholder="搜尋指南（例：GPX、離線、分帳、收據、子金鑰）..."
+                            placeholder={t('help.searchPlaceholder', '搜尋指南（例：GPX、離線、分帳、收據、子金鑰）...')}
                             className="w-full pl-8 pr-3 py-1.5 rounded-lg border border-slate-200 bg-white text-xs focus:outline-none focus:border-indigo-500"
                         />
                     </div>

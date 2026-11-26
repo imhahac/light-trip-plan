@@ -44,7 +44,8 @@ import {
     useOverrideDataContext,
 } from '../../contexts/DataContext';
 import { getUnifiedReservations } from '../../services/reservations/unifiedReservationService';
-import { placeItemRepo } from '../../services/db';
+import { placeItemRepo, collabItemRepo } from '../../services/db';
+import { getStoredApiSyncConfig, pushToIngestApi, pullFromIngestApi } from '../../services/api/ingestApiService';
 import { STORAGE_KEYS } from '../../constants/storageKeys';
 import { useLocalStorage } from '../../hooks/useLocalStorage';
 
@@ -166,6 +167,44 @@ export default function SplitPlannerView({ defaultSubTab = 'daily' }) {
         await refreshTrips(activeTrip.id);
         toast.success(`已將「${newPlace.name}」加入 Day ${targetDayIndex + 1}`);
     }, [activeTrip, selectedDayByTrip, refreshTrips]);
+
+    const handleSyncCollab = useCallback(async () => {
+        if (!activeTrip?.id) return;
+        const cfg = getStoredApiSyncConfig();
+        if (!cfg.endpointUrl || !cfg.apiToken) {
+            toast.info('請先於「匯入匯出 & 手冊 → 雲端 API 同步」設定 Worker 通道與子金鑰');
+            return;
+        }
+        try {
+            const localItems = await collabItemRepo.getByTrip(activeTrip.id);
+            const pushRes = await pushToIngestApi({
+                endpointUrl: cfg.endpointUrl,
+                apiToken: cfg.apiToken,
+                channel: cfg.channel || 'default',
+                mode: 'merge',
+                payload: { collabItems: localItems },
+            });
+            if (pushRes.queuedOffline) {
+                toast.info('目前離線，旅伴共筆已加入離線待送佇列');
+                return;
+            }
+            const pullRes = await pullFromIngestApi({
+                endpointUrl: cfg.endpointUrl,
+                apiToken: cfg.apiToken,
+                channel: cfg.channel || 'default',
+                sinceRevision: 0,
+            });
+            const remoteItems = pullRes?.data?.collabItems || [];
+            for (const item of remoteItems) {
+                if (item?.id && (!item.tripId || item.tripId === activeTrip.id)) {
+                    await collabItemRepo.save({ ...item, tripId: activeTrip.id });
+                }
+            }
+            toast.success(`旅伴共筆已與雲端通道「${cfg.channel || 'default'}」完成同步`);
+        } catch (err) {
+            toast.error(`共筆同步失敗：${err.message}`);
+        }
+    }, [activeTrip?.id]);
 
     const handleUploadGpxTrack = async (e) => {
         const file = e.target.files?.[0];
@@ -410,7 +449,7 @@ export default function SplitPlannerView({ defaultSubTab = 'daily' }) {
 
                         {/* 非同步旅伴共筆面板（筆記 / 連結 / 投票 / What's Next） */}
                         {showCollabPanel && !isSharedView && (
-                            <CollabPanel tripId={activeTrip.id} />
+                            <CollabPanel tripId={activeTrip.id} onManualSync={handleSyncCollab} />
                         )}
 
                         {/* SubTab 核心內容區 */}

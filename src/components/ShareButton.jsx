@@ -5,7 +5,8 @@
  * 或在未設定 Worker 時自動降級為系統原生分享 (Web Share API) 與剪貼簿文字摘要。
  */
 import React, { useState } from 'react';
-import { Share2, Check, Loader2, SlidersHorizontal } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { Share2, Check, Loader2, SlidersHorizontal, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { createShareSnapshot, buildFilteredShareSnapshot } from '../services/shareService';
 import { packingRepo, expenseRepo } from '../services/db';
@@ -165,55 +166,89 @@ export default function ShareButton({ variant = 'default', className = '' }) {
                 <SlidersHorizontal className="w-3.5 h-3.5" />
             </button>
 
-            {showOptions && (
-                <div className="absolute right-0 top-9 z-50 w-56 bg-white border border-slate-200 rounded-xl shadow-2xl p-3 text-xs text-slate-700 space-y-2">
-                    <div className="font-extrabold text-slate-900 border-b border-slate-100 pb-1.5">公開分享範圍設定</div>
-                    <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                            type="checkbox"
-                            checked={shareScopes.includeMap}
-                            onChange={(e) => setShareScopes((p) => ({ ...p, includeMap: e.target.checked }))}
-                            className="rounded text-indigo-600"
-                        />
-                        <span>🗺️ 每日行程與地圖</span>
-                    </label>
-                    <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                            type="checkbox"
-                            checked={shareScopes.includeBookings}
-                            onChange={(e) => setShareScopes((p) => ({ ...p, includeBookings: e.target.checked }))}
-                            className="rounded text-indigo-600"
-                        />
-                        <span>✈️ 預訂憑證 (機票/飯店)</span>
-                    </label>
-                    <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                            type="checkbox"
-                            checked={shareScopes.includePacking}
-                            onChange={(e) => setShareScopes((p) => ({ ...p, includePacking: e.target.checked }))}
-                            className="rounded text-indigo-600"
-                        />
-                        <span>🎒 行李清單</span>
-                    </label>
-                    <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                            type="checkbox"
-                            checked={shareScopes.includeCosts}
-                            onChange={(e) => setShareScopes((p) => ({ ...p, includeCosts: e.target.checked }))}
-                            className="rounded text-indigo-600"
-                        />
-                        <span>💰 費用與預算總覽</span>
-                    </label>
-                    <button
-                        type="button"
-                        onClick={handleShare}
-                        disabled={isSharing}
-                        className="w-full mt-1 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold"
+            {showOptions && (typeof document !== 'undefined' && document.body
+                ? createPortal(
+                    <div
+                        className="fixed inset-0 z-[90] bg-black/50 backdrop-blur-xs flex items-center justify-center p-4"
+                        onClick={() => setShowOptions(false)}
                     >
-                        建立並複製分享連結
-                    </button>
-                </div>
-            )}
+                        <div
+                            className="w-full max-w-xs bg-white border border-slate-200 rounded-2xl shadow-2xl p-4 text-xs text-slate-700 space-y-3"
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                                <span className="font-extrabold text-sm text-slate-900">公開分享範圍設定</span>
+                                <button
+                                    type="button"
+                                    onClick={() => setShowOptions(false)}
+                                    className="text-slate-400 hover:text-slate-700 p-0.5"
+                                >
+                                    <X className="w-4 h-4" />
+                                </button>
+                            </div>
+                            <p className="text-[11px] text-slate-500 leading-relaxed">
+                                未勾選的區塊將不會傳送至公開分享連結，確保隱私安全。
+                            </p>
+                            <div className="space-y-2">
+                                <label className="flex items-center gap-2.5 p-2 rounded-xl bg-slate-50 hover:bg-slate-100 cursor-pointer">
+                                    <input
+                                        type="checkbox"
+                                        checked={shareScopes.includeMap}
+                                        onChange={(e) => setShareScopes((p) => ({ ...p, includeMap: e.target.checked }))}
+                                        className="rounded text-indigo-600"
+                                    />
+                                    <span className="font-semibold text-slate-800">🗺️ 每日行程與地圖</span>
+                                </label>
+                                <label className="flex items-center gap-2.5 p-2 rounded-xl bg-slate-50 hover:bg-slate-100 cursor-pointer">
+                                    <input
+                                        type="checkbox"
+                                        checked={shareScopes.includeBookings}
+                                        onChange={(e) => setShareScopes((p) => ({ ...p, includeBookings: e.target.checked }))}
+                                        className="rounded text-indigo-600"
+                                    />
+                                    <span className="font-semibold text-slate-800">✈️ 預訂憑證 (機票/飯店)</span>
+                                </label>
+                                <label className="flex items-center gap-2.5 p-2 rounded-xl bg-slate-50 hover:bg-slate-100 cursor-pointer">
+                                    <input
+                                        type="checkbox"
+                                        checked={shareScopes.includePacking}
+                                        onChange={(e) => setShareScopes((p) => ({ ...p, includePacking: e.target.checked }))}
+                                        className="rounded text-indigo-600"
+                                    />
+                                    <span className="font-semibold text-slate-800">🎒 行李清單</span>
+                                </label>
+                                <label className="flex items-center gap-2.5 p-2 rounded-xl bg-slate-50 hover:bg-slate-100 cursor-pointer">
+                                    <input
+                                        type="checkbox"
+                                        checked={shareScopes.includeCosts}
+                                        onChange={(e) => setShareScopes((p) => ({ ...p, includeCosts: e.target.checked }))}
+                                        className="rounded text-indigo-600"
+                                    />
+                                    <span className="font-semibold text-slate-800">💰 費用與預算總覽</span>
+                                </label>
+                            </div>
+                            <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
+                                <button
+                                    type="button"
+                                    onClick={() => setShowOptions(false)}
+                                    className="px-3 py-2 rounded-xl text-slate-500 hover:bg-slate-100 font-bold"
+                                >
+                                    取消
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={handleShare}
+                                    disabled={isSharing}
+                                    className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold disabled:opacity-50"
+                                >
+                                    {isSharing ? '建立中...' : '建立並複製分享連結'}
+                                </button>
+                            </div>
+                        </div>
+                    </div>,
+                    document.body
+                )
+                : null)}
         </div>
     );
 }

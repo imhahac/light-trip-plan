@@ -5,6 +5,7 @@
  */
 
 import { logger } from '../../utils/logger';
+import { isEffectivelyOffline } from '../sync/offlineModeService';
 
 const TRANSITOUS_API = 'https://api.transitous.org/api/v1/plan';
 const TIMEOUT_MS = 8000;
@@ -24,6 +25,9 @@ export async function queryPublicTransitRoute(from, to, departureIso = null) {
     const fallbackUrl = getGoogleMapsTransitUrl(from, to);
     if (!from || !to || !Number.isFinite(Number(from.lat)) || !Number.isFinite(Number(to.lat))) {
         return { ok: false, itineraries: [], fallbackUrl, error: '無效的起訖座標' };
+    }
+    if (isEffectivelyOffline()) {
+        return { ok: false, itineraries: [], fallbackUrl, error: '目前為離線模式，無法查詢即時大眾運輸' };
     }
 
     const params = new URLSearchParams({

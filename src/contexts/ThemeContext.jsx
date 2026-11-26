@@ -12,13 +12,13 @@ import React, { createContext, useContext, useState, useEffect, useMemo } from '
 const STORAGE_KEY = 'ltp_appearance_prefs';
 
 export const ACCENT_SCHEMES = [
-    { id: 'indigo', label: '靛藍', hex: '#4f46e5' },
-    { id: 'emerald', label: '翡翠', hex: '#059669' },
-    { id: 'rose', label: '玫瑰', hex: '#e11d48' },
-    { id: 'amber', label: '琥珀', hex: '#d97706' },
-    { id: 'sky', label: '天藍', hex: '#0284c7' },
-    { id: 'violet', label: '紫羅蘭', hex: '#7c3aed' },
-    { id: 'slate', label: '石墨', hex: '#334155' },
+    { id: 'indigo', label: '靛藍', hex: '#4f46e5', hover: '#4338ca', soft: '#eef2ff', border: '#c7d2fe' },
+    { id: 'emerald', label: '翡翠', hex: '#059669', hover: '#047857', soft: '#ecfdf5', border: '#a7f3d0' },
+    { id: 'rose', label: '玫瑰', hex: '#e11d48', hover: '#be123c', soft: '#fff1f2', border: '#fecdd3' },
+    { id: 'amber', label: '琥珀', hex: '#d97706', hover: '#b45309', soft: '#fffbeb', border: '#fde68a' },
+    { id: 'sky', label: '天藍', hex: '#0284c7', hover: '#0369a1', soft: '#f0f9ff', border: '#bae6fd' },
+    { id: 'violet', label: '紫羅蘭', hex: '#7c3aed', hover: '#6d28d9', soft: '#f5f3ff', border: '#ddd6fe' },
+    { id: 'slate', label: '石墨', hex: '#334155', hover: '#1e293b', soft: '#f1f5f9', border: '#cbd5e1' },
 ];
 
 const DEFAULT_PREFS = {
@@ -75,6 +75,9 @@ export function ThemeProvider({ children }) {
 
         const accentObj = ACCENT_SCHEMES.find((a) => a.id === prefs.accent) || ACCENT_SCHEMES[0];
         root.style.setProperty('--ltp-accent', accentObj.hex);
+        root.style.setProperty('--ltp-accent-hover', accentObj.hover);
+        root.style.setProperty('--ltp-accent-soft', accentObj.soft);
+        root.style.setProperty('--ltp-accent-border', accentObj.border);
 
         const sizeMap = { sm: '14px', md: '16px', lg: '18px' };
         root.style.fontSize = sizeMap[prefs.textSize] || '16px';
