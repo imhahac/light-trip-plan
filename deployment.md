@@ -99,7 +99,12 @@
 2. 在 GitHub 儲存庫設定：
    * **Secret**: `CLOUDFLARE_API_TOKEN` = 您的 Cloudflare API Token。
    * **Variable**: `SHARED_TRIPS_KV_ID` = 剛才複製的 KV Namespace ID。
-3. 每次推送到 `main` 分支時，CI/CD 會自動注入 KV ID 並完成發布。
+3. 每次推送到 `main` 分支時，CI/CD 會通過 `build` 門禁後自動注入 KV ID、執行 `wrangler deploy --dry-run` 驗證並完成發布。
+4. **設定 Cloudflare Worker 端 Secrets / Variables（⚠️ CI 不會自動同步）**：
+   * 前往 Cloudflare Dashboard ➔ 您的 Worker (`flight-api-proxy`) ➔ **Settings** ➔ **Variables and Secrets**，依需求設定：
+     * `API_SECRET_TOKEN` (Secret)：啟用 `/api/v1/*` 外部寫入與雲端同步 API 必備（支援逗號分隔多把金鑰零停機輪替）。
+     * `ALLOWED_ORIGINS` (Variable)：自訂網域或 Fork 專案時填入您的前端 Origin（如 `https://<your-username>.github.io`）。
+   * 完整變數表與部署後 `curl` 驗證 SOP 請參閱 [`cloudflare-worker/CLOUDFLARE_KV_DEPLOY.md`](./cloudflare-worker/CLOUDFLARE_KV_DEPLOY.md) 與 [`cloudflare-worker/API_GUIDE.md`](./cloudflare-worker/API_GUIDE.md)。
 
 #### 路徑 B：本地手動發布 (Wrangler CLI)
 1. 本機安裝 Wrangler 並登入：
