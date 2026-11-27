@@ -45,7 +45,7 @@ import { optimizeRouteWith2Opt, calculateTotalRouteDistance } from '../../servic
 import { getOSRMRoute, getMultiLegRoute, getGoogleMapsRouteUrl } from '../../services/map/routeService';
 import { sanitizeImageUrl, compressPlacePhoto } from '../../utils/imageSafety';
 import { getDayNavigationLinks, getPlaceNavigationLinks } from '../../services/map/navigationLinks';
-import { queryPublicTransitRoute } from '../../services/map/transitousService';
+import { queryPublicTransitRoute, getGoogleMapsTransitUrl } from '../../services/map/transitousService';
 import { computeRoadTripSchedule } from '../../services/map/roadTripService';
 import { createUndoManager } from '../../services/trips/undoRedoService';
 import { searchPlaces, enrichPlaceWithWikipedia } from '../../services/places/placeSearchService';
@@ -636,7 +636,7 @@ export default function DayPlanTimeline({ onSelectDayPlaces, onRouteCalculated, 
 
     // Phase 5A.2: 單段交通模式切換 ('driving' | 'walking' | 'cycling')
     const handleCycleLegMode = async (place) => {
-        const modes = ['driving', 'walking', 'cycling'];
+        const modes = ['driving', 'transit', 'walking', 'cycling'];
         const curIdx = modes.indexOf(place.travelModeToNext || 'driving');
         const nextMode = modes[(curIdx + 1) % modes.length];
         const updated = { ...place, travelModeToNext: nextMode };
@@ -1108,7 +1108,18 @@ export default function DayPlanTimeline({ onSelectDayPlaces, onRouteCalculated, 
                         const navLinks = getPlaceNavigationLinks(place);
                         const legMode = place.travelModeToNext || 'driving';
                         const legStat = legStatsMap[place.id];
-                        const modeBadge = legMode === 'walking' ? '🚶 步行' : legMode === 'cycling' ? '🚲 單車' : '🚗 開車';
+                        const nextPlace = activeDayPlaces[idx + 1] || null;
+                        const transitNavUrl = legMode === 'transit' && nextPlace
+                            ? (legStat?.transitUrl || getGoogleMapsTransitUrl(place, nextPlace))
+                            : null;
+                        const modeBadge =
+                            legMode === 'transit'
+                                ? '🚇 大眾運輸'
+                                : legMode === 'walking'
+                                    ? '🚶 步行'
+                                    : legMode === 'cycling'
+                                        ? '🚲 單車'
+                                        : '🚗 開車';
                         return (
                         <React.Fragment key={place.id}>
                         <div
@@ -1266,20 +1277,37 @@ export default function DayPlanTimeline({ onSelectDayPlaces, onRouteCalculated, 
                             </div>
                         </div>
                         {idx < activeDayPlaces.length - 1 && (
-                            <div className="flex items-center justify-center py-0.5">
+                            <div className="flex items-center justify-center gap-1.5 py-0.5 flex-wrap">
                                 <button
                                     type="button"
                                     onClick={() => handleCycleLegMode(place)}
-                                    className="px-2.5 py-0.5 rounded-full bg-slate-100 hover:bg-indigo-50 border border-slate-200 hover:border-indigo-200 text-[10px] font-bold text-slate-600 hover:text-indigo-700 transition flex items-center gap-1.5"
-                                    title="點擊切換此段交通模式（開車 / 步行 / 單車）"
+                                    className={`px-2.5 py-0.5 rounded-full border text-[10px] font-bold transition flex items-center gap-1.5 ${
+                                        legMode === 'transit'
+                                            ? 'bg-sky-50 hover:bg-sky-100 border-sky-200 text-sky-700'
+                                            : 'bg-slate-100 hover:bg-indigo-50 border-slate-200 hover:border-indigo-200 text-slate-600 hover:text-indigo-700'
+                                    }`}
+                                    title="點擊切換此段交通模式（開車 / 大眾運輸 / 步行 / 單車）"
                                 >
                                     <span>{modeBadge}</span>
                                     {legStat && (
-                                        <span className="font-mono text-indigo-600">
-                                            · {legStat.distanceKm} km / {legStat.durationMinutes} 分{legStat.estimated ? ' (估)' : ''}
+                                        <span className={`font-mono ${legMode === 'transit' ? 'text-sky-700' : 'text-indigo-600'}`}>
+                                            · {legStat.distanceKm} km / {legStat.durationMinutes} 分
+                                            {legStat.transitSummary ? ` (${legStat.transitSummary})` : ''}
+                                            {legStat.estimated ? ' (估)' : ''}
                                         </span>
                                     )}
                                 </button>
+                                {transitNavUrl && (
+                                    <a
+                                        href={transitNavUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="px-2 py-0.5 rounded-full bg-white hover:bg-sky-50 border border-sky-200 text-[10px] font-bold text-sky-600 hover:text-sky-800 transition"
+                                        title="於 Google Maps 開啟此段大眾運輸即時轉乘路線"
+                                    >
+                                        轉乘詳情 ↗
+                                    </a>
+                                )}
                             </div>
                         )}
                         </React.Fragment>

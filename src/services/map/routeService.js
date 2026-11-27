@@ -8,12 +8,14 @@
 
 import { logger } from '../../utils/logger';
 import { isEffectivelyOffline } from '../sync/offlineModeService';
+import { queryPublicTransitRoute, getGoogleMapsTransitUrl } from './transitousService';
 
 const OSRM_TIMEOUT_MS = 8000;
 const FALLBACK_SPEED_KMH = {
     walking: 4.5,
     cycling: 15,
     driving: 35,
+    transit: 28,
 };
 
 function haversineKm(a, b) {
@@ -111,7 +113,7 @@ export async function getOSRMRoute(coordinates, profile = 'driving') {
 }
 
 /**
- * 逐段依各景點的 travelModeToNext ('driving' | 'walking' | 'cycling') 計算多段路線並合併 GeoJSON
+ * 逐段依各景點的 travelModeToNext ('driving' | 'transit' | 'walking' | 'cycling') 計算多段路線並合併 GeoJSON
  * @param {Array<{ id: string, lat: number, lng: number, travelModeToNext?: string }>} places
  */
 export async function getMultiLegRoute(places = []) {
@@ -125,17 +127,57 @@ export async function getMultiLegRoute(places = []) {
         const from = valid[i];
         const to = valid[i + 1];
         const mode = from.travelModeToNext || 'driving';
-        legTasks.push(
-            getOSRMRoute([from, to], mode).then((res) => ({
-                fromId: from.id,
-                toId: to.id,
-                mode,
-                distanceKm: res?.distanceKm ?? 0,
-                durationMinutes: res?.durationMinutes ?? 0,
-                estimated: Boolean(res?.estimated),
-                coordinates: res?.geometry?.coordinates || [[Number(from.lng), Number(from.lat)], [Number(to.lng), Number(to.lat)]],
-            }))
-        );
+        if (mode === 'transit') {
+            legTasks.push(
+                queryPublicTransitRoute(from, to).then((tRes) => {
+                    const distKm = Math.round(haversineKm(from, to) * 1.2 * 10) / 10;
+                    const best = tRes?.ok && tRes.itineraries?.[0] ? tRes.itineraries[0] : null;
+                    if (best) {
+                        const routeLabels = (best.legs || [])
+                            .filter((l) => l.mode !== 'WALK' && l.routeShortName)
+                            .map((l) => l.routeShortName)
+                            .slice(0, 3);
+                        return {
+                            fromId: from.id,
+                            toId: to.id,
+                            mode: 'transit',
+                            distanceKm: distKm,
+                            durationMinutes: best.durationMin,
+                            transfers: best.transfers ?? 0,
+                            transitSummary: routeLabels.join(' → '),
+                            transitUrl: tRes.fallbackUrl || getGoogleMapsTransitUrl(from, to),
+                            estimated: false,
+                            coordinates: [[Number(from.lng), Number(from.lat)], [Number(to.lng), Number(to.lat)]],
+                        };
+                    }
+                    // 無即時 GTFS 覆蓋或離線時，依距離自動以鐵道/地鐵均速估算 + 候車緩衝
+                    const speedKmh = distKm > 25 ? 55 : 24;
+                    const estMinutes = Math.max(5, Math.round((distKm / speedKmh) * 60) + 6);
+                    return {
+                        fromId: from.id,
+                        toId: to.id,
+                        mode: 'transit',
+                        distanceKm: distKm,
+                        durationMinutes: estMinutes,
+                        transitUrl: tRes?.fallbackUrl || getGoogleMapsTransitUrl(from, to),
+                        estimated: true,
+                        coordinates: [[Number(from.lng), Number(from.lat)], [Number(to.lng), Number(to.lat)]],
+                    };
+                })
+            );
+        } else {
+            legTasks.push(
+                getOSRMRoute([from, to], mode).then((res) => ({
+                    fromId: from.id,
+                    toId: to.id,
+                    mode,
+                    distanceKm: res?.distanceKm ?? 0,
+                    durationMinutes: res?.durationMinutes ?? 0,
+                    estimated: Boolean(res?.estimated),
+                    coordinates: res?.geometry?.coordinates || [[Number(from.lng), Number(from.lat)], [Number(to.lng), Number(to.lat)]],
+                }))
+            );
+        }
     }
 
     const legs = await Promise.all(legTasks);
