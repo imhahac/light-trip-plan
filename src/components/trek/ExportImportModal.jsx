@@ -48,7 +48,9 @@ import {
     listSubKeys,
     createSubKey,
     revokeSubKey,
+    checkApiWhoAmI,
     buildIngestCurlExamples,
+    buildCategorizedCurlExamples,
 } from '../../services/api/ingestApiService';
 import { generateTripIcs, generateAllTripsIcs, downloadIcsFile } from '../../services/export/icsExportService';
 import { generateTripGpx, downloadGpxFile } from '../../services/export/gpxExportService';
@@ -143,6 +145,30 @@ export default function ExportImportModal({ isOpen, onClose }) {
     const [newKeyChannels, setNewKeyChannels] = useState('*');
     const [newKeyExpiresDays, setNewKeyExpiresDays] = useState(0); // 0 = 永久
     const [newlyIssuedKey, setNewlyIssuedKey] = useState(null);
+    const [curlCategory, setCurlCategory] = useState('quick_write');
+    const [whoamiInfo, setWhoamiInfo] = useState(null);
+    const [isCheckingWhoami, setIsCheckingWhoami] = useState(false);
+
+    const handleCheckWhoAmI = async () => {
+        if (!apiConfig.apiToken?.trim()) {
+            toast.error('請先填寫同步 Token / 子金鑰');
+            return;
+        }
+        setIsCheckingWhoami(true);
+        try {
+            const info = await checkApiWhoAmI({
+                endpointUrl: apiConfig.endpointUrl,
+                apiToken: apiConfig.apiToken,
+            });
+            setWhoamiInfo(info);
+            toast.success(`✅ 連線成功：${info.label || info.role} (${(info.permissions || []).join(', ')})`);
+        } catch (err) {
+            setWhoamiInfo(null);
+            toast.error(`金鑰檢驗失敗：${err.message}`);
+        } finally {
+            setIsCheckingWhoami(false);
+        }
+    };
 
     // 關閉視窗時強制清空記憶體中的 Master Admin Token 與一次性明文子金鑰
     useEffect(() => {
@@ -571,7 +597,8 @@ export default function ExportImportModal({ isOpen, onClose }) {
     };
 
     const handleCopyCurlExample = async () => {
-        const text = buildIngestCurlExamples(apiConfig);
+        const categories = buildCategorizedCurlExamples(apiConfig);
+        const text = categories[curlCategory] || buildIngestCurlExamples(apiConfig);
         try {
             await navigator.clipboard.writeText(text);
             toast.success('已複製 curl API 寫入指令範例！');
@@ -967,13 +994,51 @@ export default function ExportImportModal({ isOpen, onClose }) {
                                         {isSyncingApi ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
                                         <span>將目前行程推送至 API 通道</span>
                                     </button>
+                                    <button
+                                        type="button"
+                                        onClick={handleCheckWhoAmI}
+                                        disabled={isCheckingWhoami}
+                                        className="px-3.5 py-2 bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 transition disabled:opacity-50"
+                                    >
+                                        {isCheckingWhoami ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5 text-emerald-600" />}
+                                        <span>測試連線 & 檢查金鑰 (whoami)</span>
+                                    </button>
                                 </div>
 
-                                <div className="border border-slate-200 rounded-2xl overflow-hidden">
-                                    <div className="bg-slate-100 px-3 py-2 flex items-center justify-between border-b border-slate-200">
-                                        <span className="text-[11px] font-bold text-slate-700">
-                                            💻 外部寫入 curl 範例（目前同步版本：#{getLastSyncedRevision(apiConfig.channel)}）
+                                {whoamiInfo && (
+                                    <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-900 flex flex-wrap items-center justify-between gap-2">
+                                        <span>
+                                            🔑 <strong>{whoamiInfo.label || whoamiInfo.role}</strong> · 角色：<code>{whoamiInfo.role}</code> · 權限：<code>{(whoamiInfo.permissions || []).join(', ')}</code> · 通道：<code>{(whoamiInfo.allowedChannels || ['*']).join(', ')}</code>
                                         </span>
+                                        {whoamiInfo.expiresAt && (
+                                            <span className="text-[10px] text-emerald-700">到期：{whoamiInfo.expiresAt.slice(0, 10)}</span>
+                                        )}
+                                    </div>
+                                )}
+
+                                <div className="border border-slate-200 rounded-2xl overflow-hidden">
+                                    <div className="bg-slate-100 px-3 py-2 flex flex-wrap items-center justify-between gap-2 border-b border-slate-200">
+                                        <div className="flex flex-wrap items-center gap-1">
+                                            {[
+                                                { key: 'quick_write', label: '⚡ 快速追加' },
+                                                { key: 'patch_delete', label: '✏️ PATCH / 單筆刪除' },
+                                                { key: 'query_export', label: '🔍 篩選 / 匯出' },
+                                                { key: 'admin_diag', label: '🔑 診斷 / OpenAPI' },
+                                            ].map((cat) => (
+                                                <button
+                                                    key={cat.key}
+                                                    type="button"
+                                                    onClick={() => setCurlCategory(cat.key)}
+                                                    className={`px-2 py-1 rounded-lg text-[11px] font-bold transition ${
+                                                        curlCategory === cat.key
+                                                            ? 'bg-indigo-600 text-white'
+                                                            : 'bg-white text-slate-600 hover:bg-indigo-50 border border-slate-200'
+                                                    }`}
+                                                >
+                                                    {cat.label}
+                                                </button>
+                                            ))}
+                                        </div>
                                         <button
                                             type="button"
                                             onClick={handleCopyCurlExample}
@@ -983,8 +1048,8 @@ export default function ExportImportModal({ isOpen, onClose }) {
                                             <span>複製指令</span>
                                         </button>
                                     </div>
-                                    <pre className="p-3 bg-slate-950 text-slate-200 text-[10px] font-mono overflow-x-auto leading-relaxed max-h-48">
-                                        {buildIngestCurlExamples(apiConfig)}
+                                    <pre className="p-3 bg-slate-950 text-slate-200 text-[10px] font-mono overflow-x-auto leading-relaxed max-h-56">
+                                        {buildCategorizedCurlExamples(apiConfig)[curlCategory]}
                                     </pre>
                                 </div>
 

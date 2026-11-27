@@ -132,10 +132,216 @@ async function fetchWithTimeout(targetUrl, init = {}, timeoutMs = UPSTREAM_TIMEO
   }
 }
 
+const ALLOWED_ITEM_TYPES = new Set([
+  "tickets", "hotels", "activities", "places", "days",
+  "reservations", "expenses", "packingItems", "todos", "collabItems",
+]);
+
+// 有界記憶體級認證失敗頻率限制器（零 KV 寫入；僅針對帶有真實 Client IP 的請求，不汙染本機單元測試）
+const MAX_TRACKED_IPS = 2000;
+const AUTH_RATE_WINDOW_MS = 60 * 1000;
+const AUTH_RATE_MAX_FAILURES = 20;
+const authFailureBuckets = new Map();
+
+function getClientIp(request) {
+  const cfIp = request.headers.get("CF-Connecting-IP");
+  if (cfIp && cfIp.trim()) return cfIp.trim();
+  const xff = request.headers.get("X-Forwarded-For");
+  if (xff && xff.trim()) return xff.split(",")[0].trim();
+  return null;
+}
+
+function isAuthRateLimited(request) {
+  const ip = getClientIp(request);
+  if (!ip) return false;
+  const now = Date.now();
+  const rec = authFailureBuckets.get(ip);
+  if (!rec) return false;
+  if (now - rec.windowStart > AUTH_RATE_WINDOW_MS) {
+    authFailureBuckets.delete(ip);
+    return false;
+  }
+  return rec.count >= AUTH_RATE_MAX_FAILURES;
+}
+
+function recordAuthFailure(request) {
+  const ip = getClientIp(request);
+  if (!ip) return;
+  const now = Date.now();
+  if (authFailureBuckets.size >= MAX_TRACKED_IPS && !authFailureBuckets.has(ip)) {
+    for (const [k, v] of authFailureBuckets.entries()) {
+      if (now - v.windowStart > AUTH_RATE_WINDOW_MS) authFailureBuckets.delete(k);
+    }
+    if (authFailureBuckets.size >= MAX_TRACKED_IPS) {
+      const oldestKey = authFailureBuckets.keys().next().value;
+      if (oldestKey) authFailureBuckets.delete(oldestKey);
+    }
+  }
+  const rec = authFailureBuckets.get(ip);
+  if (!rec || now - rec.windowStart > AUTH_RATE_WINDOW_MS) {
+    authFailureBuckets.set(ip, { count: 1, windowStart: now });
+  } else {
+    rec.count += 1;
+  }
+}
+
+function escapeCsvCell(val) {
+  let str = String(val ?? "");
+  // 防範 Excel CSV Formula Injection
+  if (/^[=+\-@\t\r]/.test(str)) {
+    str = `'${str}`;
+  }
+  return `"${str.replace(/"/g, '""')}"`;
+}
+
+function escapeXml(val) {
+  return String(val ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function escapeIcs(val) {
+  return String(val ?? "")
+    .replace(/\\/g, "\\\\")
+    .replace(/;/g, "\\;")
+    .replace(/,/g, "\\,")
+    .replace(/\r?\n/g, "\\n");
+}
+
+function summarizeIngestPayload(payload = {}) {
+  return {
+    tickets: payload?.tickets?.length || 0,
+    hotels: payload?.hotels?.length || 0,
+    activities: payload?.activities?.length || 0,
+    places: payload?.places?.length || 0,
+    days: payload?.days?.length || 0,
+    reservations: payload?.reservations?.length || 0,
+    expenses: payload?.expenses?.length || 0,
+    packingItems: payload?.packingItems?.length || 0,
+    todos: payload?.todos?.length || 0,
+    collabItems: payload?.collabItems?.length || 0,
+  };
+}
+
+function filterIngestPayload(payload = {}, { types = null, date = null } = {}) {
+  const out = {};
+  const allowedTypes = types ? new Set(types) : null;
+  const matchDate = (item) => {
+    if (!date) return true;
+    const candidates = [
+      item?.date, item?.startDate, item?.endDate, item?.outboundDate,
+      item?.returnDate, item?.checkIn, item?.checkOut, item?.dueDate,
+      item?.flightDetails?.departureTime, item?.accommodationDetails?.checkInDate,
+    ].filter(Boolean).map((d) => String(d).slice(0, 10));
+    return candidates.includes(date);
+  };
+
+  if (!allowedTypes && payload.trip) out.trip = payload.trip;
+  for (const field of ALLOWED_ITEM_TYPES) {
+    if (allowedTypes && !allowedTypes.has(field)) continue;
+    const arr = Array.isArray(payload[field]) ? payload[field] : [];
+    out[field] = date ? arr.filter(matchDate) : arr;
+  }
+  return out;
+}
+
+function buildCsvExport(payload = {}) {
+  const expenses = Array.isArray(payload.expenses) ? payload.expenses : [];
+  const header = ["id", "date", "title", "category", "amount", "currency", "baseAmount", "baseCurrency", "paidBy", "settled"];
+  const rows = [header.map(escapeCsvCell).join(",")];
+  for (const e of expenses) {
+    rows.push([
+      e.id, e.date || "", e.title || "", e.category || "",
+      e.amount ?? "", e.currency || "", e.baseAmount ?? "", e.baseCurrency || "",
+      e.paidBy || "", e.settled ? "true" : "false",
+    ].map(escapeCsvCell).join(","));
+  }
+  return `\uFEFF${rows.join("\r\n")}`;
+}
+
+function buildGpxExport(payload = {}, channel = "default") {
+  const pts = [
+    ...(Array.isArray(payload.places) ? payload.places : []),
+    ...(Array.isArray(payload.activities) ? payload.activities : []),
+    ...(Array.isArray(payload.hotels) ? payload.hotels : []),
+  ].filter((p) => Number.isFinite(Number(p?.lat)) && Number.isFinite(Number(p?.lng)) && !(Number(p.lat) === 0 && Number(p.lng) === 0));
+
+  const wpts = pts.map((p) =>
+    `  <wpt lat="${Number(p.lat).toFixed(6)}" lon="${Number(p.lng).toFixed(6)}"><name>${escapeXml(p.name || p.title || "Waypoint")}</name></wpt>`
+  ).join("\n");
+
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="LightTripPlan-Worker">\n  <metadata><name>${escapeXml(payload.trip?.title || channel)}</name></metadata>\n${wpts}\n</gpx>`;
+}
+
+function buildIcsExport(payload = {}, channel = "default") {
+  const nowStamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15) + "Z";
+  const lines = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//LightTripPlan//Worker Export//EN",
+    `X-WR-CALNAME:${escapeIcs(payload.trip?.title || channel)}`,
+  ];
+  const pushEvent = (uid, dateStr, summary, desc = "") => {
+    if (!dateStr) return;
+    const clean = String(dateStr).slice(0, 10).replace(/-/g, "");
+    if (!/^\d{8}$/.test(clean)) return;
+    lines.push("BEGIN:VEVENT");
+    lines.push(`UID:${escapeIcs(uid)}@light-trip-plan`);
+    lines.push(`DTSTAMP:${nowStamp}`);
+    lines.push(`DTSTART;VALUE=DATE:${clean}`);
+    lines.push(`DTEND;VALUE=DATE:${clean}`);
+    lines.push(`SUMMARY:${escapeIcs(summary)}`);
+    if (desc) lines.push(`DESCRIPTION:${escapeIcs(desc)}`);
+    lines.push("END:VEVENT");
+  };
+  (payload.activities || []).forEach((a, i) => pushEvent(`act_${a.id || i}`, a.startDate || a.date, a.title || a.name || "Activity", a.notes || ""));
+  (payload.reservations || []).forEach((r, i) => pushEvent(`res_${r.id || i}`, r.startDate || r.flightDetails?.departureTime || r.accommodationDetails?.checkInDate, r.title || "Reservation", r.confirmationCode ? `Code: ${r.confirmationCode}` : ""));
+  (payload.todos || []).forEach((td, i) => pushEvent(`todo_${td.id || i}`, td.dueDate, `Todo: ${td.title || ""}`, ""));
+  lines.push("END:VCALENDAR");
+  return lines.join("\r\n");
+}
+
+function buildOpenApiSpec(origin) {
+  return {
+    openapi: "3.1.0",
+    info: { title: "Light Trip Plan Worker API", version: "2.1.0" },
+    servers: [{ url: origin }],
+    components: {
+      securitySchemes: {
+        bearerAuth: { type: "http", scheme: "bearer" },
+        apiKeyAuth: { type: "apiKey", in: "header", name: "X-API-Key" },
+      },
+    },
+    security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
+    paths: {
+      "/api/v1/health": { get: { summary: "Health check (public)", security: [] } },
+      "/api/v1/whoami": { get: { summary: "Inspect current Master Token or Sub-Key permissions" } },
+      "/api/v1/channels": { get: { summary: "List active sync channels (Master Admin only)" } },
+      "/api/v1/ingest": {
+        get: { summary: "Read channel data (supports sinceRevision, summaryOnly, type, date)" },
+        post: { summary: "Append/merge items into channel (supports X-Idempotency-Key, dryRun, createSnapshot)" },
+        put: { summary: "Replace full channel snapshot" },
+        patch: { summary: "Partially update existing items by id" },
+        delete: { summary: "Delete a single item (?type=&id=) or clear channel (requires delete permission)" },
+      },
+      "/api/v1/ingest/compact": { post: { summary: "Manually compact channel inbox into single snapshot" } },
+      "/api/v1/export": { get: { summary: "Export channel directly as ics, gpx, csv, or json" } },
+      "/api/v1/keys": {
+        get: { summary: "List sub-keys (Master Admin only)" },
+        post: { summary: "Issue scoped sub-key (Master Admin only)" },
+        delete: { summary: "Revoke sub-key by ?id= (Master Admin only)" },
+      },
+    },
+  };
+}
+
 /**
- * 讀取並依時序重播 Append-Only Inbox 事件（消除 KV 併發讀寫 Lost Update）
+ * 讀取並依時序重播 Append-Only Inbox 事件（消除 KV 併發讀寫 Lost Update，支援 Tombstone 與手動 Compaction）
  */
-async function replayChannelInbox(kv, channel) {
+async function replayChannelInbox(kv, channel, { forceCompact = false } = {}) {
   const inboxPrefix = `api_inbox:${channel}:`;
   const legacyKey = `api_sync:${channel}`;
   let eventKeys = [];
@@ -157,7 +363,7 @@ async function replayChannelInbox(kv, channel) {
     // 向下相容：讀取舊版單鍵 api_sync:<channel>
     const rawLegacy = await kv.get(legacyKey);
     if (!rawLegacy) {
-      return { revision: 0, updatedAt: null, snapshotId: null, payload: null };
+      return { revision: 0, updatedAt: null, snapshotId: null, payload: null, tombstones: [], compactedCount: 0 };
     }
     try {
       const parsedLegacy = JSON.parse(rawLegacy);
@@ -166,9 +372,11 @@ async function replayChannelInbox(kv, channel) {
         updatedAt: parsedLegacy.updatedAt || null,
         snapshotId: parsedLegacy.snapshotId || null,
         payload: parsedLegacy.payload || parsedLegacy,
+        tombstones: Array.isArray(parsedLegacy.tombstones) ? parsedLegacy.tombstones : [],
+        compactedCount: 0,
       };
     } catch {
-      return { revision: 0, updatedAt: null, snapshotId: null, payload: null };
+      return { revision: 0, updatedAt: null, snapshotId: null, payload: null, tombstones: [], compactedCount: 0 };
     }
   }
 
@@ -176,6 +384,7 @@ async function replayChannelInbox(kv, channel) {
   let baseRevision = 0;
   let state = {};
   let seenKeys = new Set();
+  let tombstones = [];
   let latestUpdatedAt = null;
   let latestSnapshotId = null;
 
@@ -189,6 +398,9 @@ async function replayChannelInbox(kv, channel) {
       latestSnapshotId = baseRecord.snapshotId || null;
       if (Array.isArray(baseRecord.seenIdempotencyKeys)) {
         seenKeys = new Set(baseRecord.seenIdempotencyKeys.slice(-200));
+      }
+      if (Array.isArray(baseRecord.tombstones)) {
+        tombstones = baseRecord.tombstones.slice(-200);
       }
     } catch {
       // ignore malformed base
@@ -230,26 +442,36 @@ async function replayChannelInbox(kv, channel) {
   }
   if (hasReplace) {
     state = {};
+    tombstones = [];
   }
 
   for (let i = startIdx; i < uniqueEvents.length; i++) {
     const ev = uniqueEvents[i];
-    state = mergeIngestPayload(state, ev.payload || {}, ev.mode === "replace" ? "replace" : "merge");
+    if (ev.mode === "delete_item" && ev.targetType && ev.targetId) {
+      if (Array.isArray(state[ev.targetType])) {
+        state[ev.targetType] = state[ev.targetType].filter((item) => String(item?.id) !== String(ev.targetId));
+      }
+      tombstones.push({ type: ev.targetType, id: String(ev.targetId), deletedAt: ev.createdAt || null });
+    } else {
+      state = mergeIngestPayload(state, ev.payload || {}, ev.mode === "replace" ? "replace" : "merge");
+    }
   }
 
   const latest = uniqueEvents[uniqueEvents.length - 1];
   const totalRevision = baseRevision + uniqueEvents.length;
   const finalUpdatedAt = latest?.createdAt || latestUpdatedAt;
   const finalSnapshotId = latest?.snapshotId || latestSnapshotId;
+  const cappedTombstones = tombstones.slice(-200);
 
-  // Auto-Compaction：當 Inbox 累積達 20 筆以上，壓縮回單一快照鍵並清除舊 Inbox 鍵，保護 KV 免費額度
-  if (eventKeys.length >= 20) {
+  // Auto-Compaction（達 20 筆或手動 forceCompact 時壓縮回單一快照鍵）
+  if ((eventKeys.length >= 20 || (forceCompact && eventKeys.length > 0))) {
     const compacted = {
       revision: totalRevision,
       updatedAt: finalUpdatedAt,
       snapshotId: finalSnapshotId,
       payload: state,
       seenIdempotencyKeys: Array.from(seenKeys).slice(-200),
+      tombstones: cappedTombstones,
     };
     await kv.put(`api_sync:${channel}`, JSON.stringify(compacted), {
       expirationTtl: API_KV_TTL_SECONDS,
@@ -263,6 +485,8 @@ async function replayChannelInbox(kv, channel) {
     updatedAt: finalUpdatedAt,
     snapshotId: finalSnapshotId,
     payload: state,
+    tombstones: cappedTombstones,
+    compactedCount: eventKeys.length,
   };
 }
 
@@ -581,11 +805,11 @@ export default {
     const apiType = url.searchParams.get("api");
     const rawFlightNo = url.searchParams.get("flight");
 
-    // 嚴格 CORS 標頭控制（依據 ALLOWED_ORIGINS 白名單，不反射任意惡意來源）
+    // 嚴格 CORS 標頭控制（依據 ALLOWED_ORIGINS 白名單，同步放行 PATCH 與 X-Idempotency-Key）
     const corsHeaders = {
       "Access-Control-Allow-Origin": allowedOrigin,
       "Vary": "Origin",
-      "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key, X-Share-Token, X-Idempotency-Key",
       "X-Content-Type-Options": "nosniff",
       "Cache-Control": "no-store"
@@ -596,11 +820,166 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders });
     }
 
-    const json = (data, status = 200) =>
+    const json = (data, status = 200, extraHeaders = {}) =>
       new Response(JSON.stringify(data), {
         status,
-        headers: { "Content-Type": "application/json", ...corsHeaders }
+        headers: { "Content-Type": "application/json", ...corsHeaders, ...extraHeaders }
       });
+
+    // ── 公開診斷與規格端點 (零 KV 寫入) ──────────────────────────────────────
+    if (url.pathname === "/api/v1/health" && request.method === "GET") {
+      return json({
+        ok: true,
+        service: "light-trip-plan-worker",
+        version: "2.1.0",
+        kvBound: Boolean(env.SHARED_TRIPS),
+        ts: new Date().toISOString(),
+      });
+    }
+
+    if (url.pathname === "/api/v1/openapi.json" && request.method === "GET") {
+      return json(buildOpenApiSpec(url.origin));
+    }
+
+    // ── 認證失敗速率限制檢查（僅對 /api/v1/* 保護端點） ──────────────────────
+    if (url.pathname.startsWith("/api/v1/") && isAuthRateLimited(request)) {
+      auditLog("rate_limited", { path: url.pathname, method: request.method });
+      return json(
+        { error: "認證失敗次數過多，請稍後再試 (429 Too Many Requests)" },
+        429,
+        { "Retry-After": "60" }
+      );
+    }
+
+    // ── 路由 /api/v1/whoami — 檢驗當前 Master Token 或子金鑰權限與到期日 ───────
+    if (url.pathname === "/api/v1/whoami" && request.method === "GET") {
+      const auth = await authenticateApiRequest(request, env);
+      if (!auth.ok) {
+        if (auth.status === 401) recordAuthFailure(request);
+        auditLog("auth_failed", { path: url.pathname, method: "GET", status: auth.status });
+        return json({ error: auth.error }, auth.status);
+      }
+      return json({
+        success: true,
+        role: auth.role,
+        keyId: auth.keyId,
+        label: auth.label,
+        permissions: auth.permissions,
+        allowedChannels: auth.allowedChannels,
+        expiresAt: auth.expiresAt || null,
+      });
+    }
+
+    // ── 路由 /api/v1/channels — 列出活躍同步通道 (僅 Master Token，嚴格排除系統鍵) ──
+    if (url.pathname === "/api/v1/channels" && request.method === "GET") {
+      if (!env.SHARED_TRIPS) return json({ error: "KV namespace SHARED_TRIPS 未綁定" }, 500);
+      const auth = await authenticateApiRequest(request, env);
+      if (!auth.ok) {
+        if (auth.status === 401) recordAuthFailure(request);
+        return json({ error: auth.error }, auth.status);
+      }
+      if (auth.role !== "admin") {
+        return json({ error: "權限不足 (403 Forbidden)：僅限 Master Admin Token 可查詢通道清單" }, 403);
+      }
+      const channels = new Set();
+      if (typeof env.SHARED_TRIPS.list === "function") {
+        for (const prefix of ["api_sync:", "api_inbox:"]) {
+          let cursor;
+          do {
+            const page = await env.SHARED_TRIPS.list({ prefix, cursor });
+            for (const k of page?.keys || []) {
+              const name = k.name || "";
+              if (name.startsWith("api_sync:")) {
+                const ch = name.slice("api_sync:".length);
+                if (ch) channels.add(ch);
+              } else if (name.startsWith("api_inbox:")) {
+                const rest = name.slice("api_inbox:".length);
+                const ch = rest.split(":")[0];
+                if (ch) channels.add(ch);
+              }
+            }
+            cursor = page?.list_complete ? undefined : page?.cursor;
+          } while (cursor);
+        }
+      }
+      return json({ success: true, channels: Array.from(channels).sort() });
+    }
+
+    // ── 路由 /api/v1/ingest/compact — 手動壓縮指定通道 Inbox ─────────────────
+    if (url.pathname === "/api/v1/ingest/compact" && request.method === "POST") {
+      if (!env.SHARED_TRIPS) return json({ error: "KV namespace SHARED_TRIPS 未綁定" }, 500);
+      const auth = await authenticateApiRequest(request, env);
+      if (!auth.ok) {
+        if (auth.status === 401) recordAuthFailure(request);
+        return json({ error: auth.error }, auth.status);
+      }
+      const channel = sanitizeChannel(url.searchParams.get("channel"));
+      const access = checkKeyAuthorization(auth, "write", channel);
+      if (!access.allowed) return json({ error: access.error }, access.status);
+      const replayed = await replayChannelInbox(env.SHARED_TRIPS, channel, { forceCompact: true });
+      return json({
+        success: true,
+        channel,
+        revision: replayed.revision,
+        compactedEvents: replayed.compactedCount || 0,
+      });
+    }
+
+    // ── 路由 /api/v1/export — 直接匯出 ics / gpx / csv / json ─────────────────
+    if (url.pathname === "/api/v1/export" && request.method === "GET") {
+      if (!env.SHARED_TRIPS) return json({ error: "KV namespace SHARED_TRIPS 未綁定" }, 500);
+      const auth = await authenticateApiRequest(request, env);
+      if (!auth.ok) {
+        if (auth.status === 401) recordAuthFailure(request);
+        return json({ error: auth.error }, auth.status);
+      }
+      const channel = sanitizeChannel(url.searchParams.get("channel"));
+      const access = checkKeyAuthorization(auth, "read", channel);
+      if (!access.allowed) return json({ error: access.error }, access.status);
+
+      const format = (url.searchParams.get("format") || "json").toLowerCase();
+      const replayed = await replayChannelInbox(env.SHARED_TRIPS, channel);
+      const payload = replayed.payload || {};
+
+      if (format === "csv") {
+        return new Response(buildCsvExport(payload), {
+          status: 200,
+          headers: {
+            "Content-Type": "text/csv; charset=utf-8",
+            "Content-Disposition": `attachment; filename="${channel}-expenses.csv"`,
+            ...corsHeaders,
+          },
+        });
+      }
+      if (format === "gpx") {
+        return new Response(buildGpxExport(payload, channel), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/gpx+xml; charset=utf-8",
+            "Content-Disposition": `attachment; filename="${channel}.gpx"`,
+            ...corsHeaders,
+          },
+        });
+      }
+      if (format === "ics") {
+        return new Response(buildIcsExport(payload, channel), {
+          status: 200,
+          headers: {
+            "Content-Type": "text/calendar; charset=utf-8",
+            "Content-Disposition": `attachment; filename="${channel}.ics"`,
+            ...corsHeaders,
+          },
+        });
+      }
+      return new Response(JSON.stringify(payload, null, 2), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          "Content-Disposition": `attachment; filename="${channel}.json"`,
+          ...corsHeaders,
+        },
+      });
+    }
 
     // ── 路由 /api/v1/keys — 子金鑰簽發、清單查詢與撤銷管理接口 (僅限 Master Token) ──
     if (url.pathname === "/api/v1/keys") {
@@ -738,13 +1117,14 @@ export default {
 
       const auth = await authenticateApiRequest(request, env);
       if (!auth.ok) {
+        if (auth.status === 401) recordAuthFailure(request);
         auditLog("auth_failed", { path: url.pathname, method: request.method, status: auth.status });
         return json({ error: auth.error }, auth.status);
       }
 
       const queryChannel = url.searchParams.get("channel");
 
-      // 1. GET /api/v1/ingest — 讀取並重播雲端 Append-Only Inbox 通道最新資料
+      // 1. GET /api/v1/ingest — 讀取並重播雲端 Append-Only Inbox 通道最新資料（支援 summaryOnly / type / date 篩選）
       if (request.method === "GET") {
         const channel = sanitizeChannel(queryChannel);
         const access = checkKeyAuthorization(auth, "read", channel);
@@ -762,6 +1142,7 @@ export default {
             updatedAt: null,
             hasUpdate: false,
             data: null,
+            tombstones: [],
           });
         }
 
@@ -780,6 +1161,30 @@ export default {
           });
         }
 
+        const summaryOnly = url.searchParams.get("summaryOnly") === "true";
+        if (summaryOnly) {
+          return json({
+            success: true,
+            channel,
+            revision: currentRevision,
+            updatedAt: replayed.updatedAt,
+            snapshotId: replayed.snapshotId,
+            hasUpdate: true,
+            summary: summarizeIngestPayload(replayed.payload),
+            tombstoneCount: replayed.tombstones?.length || 0,
+          });
+        }
+
+        const typeParam = (url.searchParams.get("type") || "").trim();
+        const dateParam = (url.searchParams.get("date") || "").trim();
+        const requestedTypes = typeParam
+          ? typeParam.split(",").map((s) => s.trim()).filter((s) => ALLOWED_ITEM_TYPES.has(s))
+          : null;
+        const isFiltered = Boolean((requestedTypes && requestedTypes.length > 0) || dateParam);
+        const responseData = isFiltered
+          ? filterIngestPayload(replayed.payload, { types: requestedTypes, date: dateParam || null })
+          : replayed.payload;
+
         return json({
           success: true,
           channel,
@@ -787,12 +1192,14 @@ export default {
           updatedAt: replayed.updatedAt,
           snapshotId: replayed.snapshotId,
           hasUpdate: true,
-          data: replayed.payload,
+          ...(isFiltered ? { filtered: true, filters: { type: requestedTypes, date: dateParam || null } } : {}),
+          data: responseData,
+          tombstones: replayed.tombstones || [],
         });
       }
 
-      // 2. POST / PUT /api/v1/ingest — Append-Only Inbox 寫入 (消除 KV 併發 Lost Update)
-      if (request.method === "POST" || request.method === "PUT") {
+      // 2. POST / PUT / PATCH /api/v1/ingest — Append-Only Inbox 寫入（支援 PATCH 局部更新與 ?dryRun=true 試跑）
+      if (request.method === "POST" || request.method === "PUT" || request.method === "PATCH") {
         const contentLength = parseInt(request.headers.get("content-length") || "0", 10);
         if (contentLength > MAX_PAYLOAD_BYTES) {
           return json({ error: "承載資料過大 (Payload Too Large，上限 512KB)" }, 413);
@@ -820,11 +1227,27 @@ export default {
           auditLog("authz_denied", { path: url.pathname, method: request.method, channel, keyId: auth.keyId });
           return json({ error: access.error }, access.status);
         }
-        const mode = (normalizedInput.mode || url.searchParams.get("mode") || (request.method === "PUT" ? "replace" : "merge")) === "replace"
-          ? "replace"
-          : "merge";
+        const mode = request.method === "PATCH"
+          ? "merge"
+          : (normalizedInput.mode || url.searchParams.get("mode") || (request.method === "PUT" ? "replace" : "merge")) === "replace"
+            ? "replace"
+            : "merge";
+        const isDryRun = url.searchParams.get("dryRun") === "true" || normalizedInput.dryRun === true;
         const shouldCreateSnapshot =
-          url.searchParams.get("createSnapshot") === "true" || normalizedInput.createSnapshot === true;
+          !isDryRun && (url.searchParams.get("createSnapshot") === "true" || normalizedInput.createSnapshot === true);
+
+        if (isDryRun) {
+          const current = await replayChannelInbox(env.SHARED_TRIPS, channel);
+          const simulated = mergeIngestPayload(current.payload || {}, normalizedInput, mode);
+          return json({
+            success: true,
+            dryRun: true,
+            channel,
+            mode,
+            currentRevision: current.revision || 0,
+            projectedSummary: summarizeIngestPayload(simulated),
+          });
+        }
 
         const eventId = uuid();
         const updatedAt = new Date().toISOString();
@@ -864,6 +1287,7 @@ export default {
 
         auditLog("ingest_write", {
           channel,
+          method: request.method,
           mode,
           revision: nextRevision,
           keyId: auth.keyId,
@@ -884,27 +1308,48 @@ export default {
                 shareViewQuery: `?view=${snapshotId}`,
               }
             : {}),
-          summary: {
-            tickets: mergedPayload.tickets?.length || 0,
-            hotels: mergedPayload.hotels?.length || 0,
-            activities: mergedPayload.activities?.length || 0,
-            places: mergedPayload.places?.length || 0,
-            days: mergedPayload.days?.length || 0,
-            reservations: mergedPayload.reservations?.length || 0,
-            expenses: mergedPayload.expenses?.length || 0,
-            packingItems: mergedPayload.packingItems?.length || 0,
-            todos: mergedPayload.todos?.length || 0,
-          },
+          summary: summarizeIngestPayload(mergedPayload),
         });
       }
 
-      // 3. DELETE /api/v1/ingest — 清空指定雲端同步通道 (含所有 Inbox 事件與舊版鍵)
+      // 3. DELETE /api/v1/ingest — 單筆 Tombstone 刪除 (?type=&id=) 或清空整個通道（一律要求 delete 權限）
       if (request.method === "DELETE") {
         const channel = sanitizeChannel(queryChannel);
         const access = checkKeyAuthorization(auth, "delete", channel);
         if (!access.allowed) {
           auditLog("authz_denied", { path: url.pathname, method: "DELETE", channel, keyId: auth.keyId });
           return json({ error: access.error }, access.status);
+        }
+
+        const targetType = (url.searchParams.get("type") || "").trim();
+        const targetId = (url.searchParams.get("id") || "").trim();
+        if (targetType || targetId) {
+          if (!ALLOWED_ITEM_TYPES.has(targetType) || !targetId) {
+            return json({ error: "單筆刪除必須同時提供合法的 type（如 activities / expenses / todos）與 id" }, 400);
+          }
+          const eventId = uuid();
+          const deletedAt = new Date().toISOString();
+          const paddedTs = String(Date.now()).padStart(15, "0");
+          const inboxEventKey = `api_inbox:${channel}:${paddedTs}_${eventId}`;
+          await env.SHARED_TRIPS.put(inboxEventKey, JSON.stringify({
+            id: eventId,
+            channel,
+            mode: "delete_item",
+            targetType,
+            targetId,
+            createdAt: deletedAt,
+            author: auth.label || auth.keyId,
+          }), { expirationTtl: API_KV_TTL_SECONDS });
+
+          const replayed = await replayChannelInbox(env.SHARED_TRIPS, channel);
+          auditLog("ingest_item_deleted", { channel, targetType, targetId, revision: replayed.revision, keyId: auth.keyId });
+          return json({
+            success: true,
+            channel,
+            deleted: { type: targetType, id: targetId, deletedAt },
+            revision: replayed.revision,
+            summary: summarizeIngestPayload(replayed.payload || {}),
+          });
         }
 
         const keysToDelete = [`api_sync:${channel}`];

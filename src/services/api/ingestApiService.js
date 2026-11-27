@@ -253,6 +253,159 @@ export async function revokeSubKey({
 }
 
 /**
+ * 檢驗目前憑證（Master Token 或子金鑰）的角色、權限、允許通道與到期日 (GET /api/v1/whoami)
+ */
+export async function checkApiWhoAmI({
+    endpointUrl = DEFAULT_WORKER_BASE,
+    apiToken,
+}) {
+    const base = String(endpointUrl || DEFAULT_WORKER_BASE).replace(/\/+$/, '');
+    const headers = buildAuthHeaders(apiToken);
+    const res = await fetch(`${base}/api/v1/whoami`, { method: 'GET', headers });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        throw new Error(data.error || `驗證失敗 (HTTP ${res.status})`);
+    }
+    return data;
+}
+
+/**
+ * 局部更新雲端單筆項目 (PATCH /api/v1/ingest)
+ */
+export async function patchIngestItem({
+    endpointUrl = DEFAULT_WORKER_BASE,
+    apiToken,
+    channel = 'default',
+    payload,
+    dryRun = false,
+}) {
+    const base = String(endpointUrl || DEFAULT_WORKER_BASE).replace(/\/+$/, '');
+    const headers = buildAuthHeaders(apiToken);
+    const params = new URLSearchParams({
+        channel: String(channel || 'default').trim() || 'default',
+    });
+    if (dryRun) params.set('dryRun', 'true');
+    const res = await fetch(`${base}/api/v1/ingest?${params.toString()}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        throw new Error(data.error || `局部更新失敗 (HTTP ${res.status})`);
+    }
+    return data;
+}
+
+/**
+ * 單筆 Tombstone 刪除雲端指定項目 (DELETE /api/v1/ingest?type=&id=)
+ */
+export async function deleteIngestItem({
+    endpointUrl = DEFAULT_WORKER_BASE,
+    apiToken,
+    channel = 'default',
+    type,
+    id,
+}) {
+    const base = String(endpointUrl || DEFAULT_WORKER_BASE).replace(/\/+$/, '');
+    const headers = buildAuthHeaders(apiToken);
+    const params = new URLSearchParams({
+        channel: String(channel || 'default').trim() || 'default',
+        type: String(type || '').trim(),
+        id: String(id || '').trim(),
+    });
+    const res = await fetch(`${base}/api/v1/ingest?${params.toString()}`, {
+        method: 'DELETE',
+        headers,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        throw new Error(data.error || `單筆刪除失敗 (HTTP ${res.status})`);
+    }
+    return data;
+}
+
+/**
+ * 產生分類式 cURL 範例（涵蓋快速寫入、PATCH/單筆刪除、篩選匯出、診斷與 OpenAPI）
+ */
+export function buildCategorizedCurlExamples({
+    endpointUrl = DEFAULT_WORKER_BASE,
+    apiToken = '<YOUR_API_SECRET_TOKEN>',
+    channel = 'default',
+} = {}) {
+    const base = String(endpointUrl || DEFAULT_WORKER_BASE).replace(/\/+$/, '');
+    const tokenDisplay = String(apiToken || '').trim() || '<YOUR_API_SECRET_TOKEN>';
+    const ch = String(channel || 'default').trim() || 'default';
+
+    return {
+        quick_write: `# 1. 單筆追加活動／景點（附 X-Idempotency-Key 防止重試重複寫入）
+curl -X POST "${base}/api/v1/ingest?channel=${ch}&mode=merge" \\
+  -H "Authorization: Bearer ${tokenDisplay}" \\
+  -H "X-Idempotency-Key: act-20261225-dinner-01" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "activity": {
+      "id": "act-2026-1225-dinner",
+      "title": "六本木燒肉晚餐",
+      "startDate": "2026-12-25",
+      "time": "19:30",
+      "lat": 35.6627,
+      "lng": 139.7314
+    }
+  }'
+
+# 2. 追加一筆消費或旅伴共筆投票
+curl -X POST "${base}/api/v1/ingest?channel=${ch}&mode=merge" \\
+  -H "Authorization: Bearer ${tokenDisplay}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "expense": { "id": "exp-ramen", "title": "一蘭拉麵", "amount": 1480, "currency": "JPY", "date": "2026-12-25" }
+  }'`,
+
+        patch_delete: `# 1. 局部更新 (PATCH)：將待辦標記為已完成（不覆蓋其他欄位）
+curl -X PATCH "${base}/api/v1/ingest?channel=${ch}" \\
+  -H "Authorization: Bearer ${tokenDisplay}" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "todo": { "id": "todo-jr-pass", "isDone": true } }'
+
+# 2. 寫入試跑驗證 (?dryRun=true，零 KV 寫入消耗)
+curl -X POST "${base}/api/v1/ingest?channel=${ch}&dryRun=true" \\
+  -H "Authorization: Bearer ${tokenDisplay}" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "activity": { "id": "test-1", "title": "測試驗證" } }'
+
+# 3. 單筆刪除 (Tombstone，需 delete 權限，不會清空整個通道)
+curl -X DELETE "${base}/api/v1/ingest?channel=${ch}&type=activities&id=act-2026-1225-dinner" \\
+  -H "Authorization: Bearer ${tokenDisplay}"`,
+
+        query_export: `# 1. 僅讀取通道摘要筆數（省流量 / 省 AI Agent Token）
+curl -X GET "${base}/api/v1/ingest?channel=${ch}&summaryOnly=true" \\
+  -H "Authorization: Bearer ${tokenDisplay}"
+
+# 2. 依類型與日期篩選讀取 (回傳標記 filtered: true)
+curl -X GET "${base}/api/v1/ingest?channel=${ch}&type=activities,expenses&date=2026-12-25" \\
+  -H "Authorization: Bearer ${tokenDisplay}"
+
+# 3. 一行直接匯出標準行事曆 (.ics)、航跡 (.gpx) 或費用報表 (.csv)
+curl -fsSL -H "Authorization: Bearer ${tokenDisplay}" "${base}/api/v1/export?channel=${ch}&format=ics" -o trip.ics
+curl -fsSL -H "Authorization: Bearer ${tokenDisplay}" "${base}/api/v1/export?channel=${ch}&format=csv" -o expenses.csv
+curl -fsSL -H "Authorization: Bearer ${tokenDisplay}" "${base}/api/v1/export?channel=${ch}&format=gpx" -o route.gpx`,
+
+        admin_diag: `# 1. 公開健康檢查 (零認證) & OpenAPI 3.1 規格 (可匯入 Postman / n8n / AI Agent)
+curl -s "${base}/api/v1/health"
+curl -s "${base}/api/v1/openapi.json"
+
+# 2. 檢驗目前 Token / 子金鑰身份、權限與到期日
+curl -X GET "${base}/api/v1/whoami" \\
+  -H "Authorization: Bearer ${tokenDisplay}"
+
+# 3. 列出所有活躍同步通道 (僅 Master Token) & 手動壓縮 Inbox
+curl -X GET "${base}/api/v1/channels" -H "Authorization: Bearer <MASTER_TOKEN>"
+curl -X POST "${base}/api/v1/ingest/compact?channel=${ch}" -H "Authorization: Bearer ${tokenDisplay}"`,
+    };
+}
+
+/**
  * 產生可直接給外部腳本 / iOS 捷徑 / AI Agent 使用的 curl 範例
  */
 export function buildIngestCurlExamples({

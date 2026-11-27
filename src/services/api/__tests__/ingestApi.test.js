@@ -387,4 +387,88 @@ describe('Cloudflare Worker /api/v1/ingest 認證寫入與前端同步測試', (
             globalThis.fetch = originalFetch;
         }
     });
+
+    it('API v2.1: health / openapi / whoami / channels / PATCH / dryRun / 單筆 Tombstone 刪除 / 篩選與安全匯出', async () => {
+        // 1. health & openapi & CORS PATCH
+        const hRes = await worker.fetch(new Request('https://w.example/api/v1/health'), env);
+        expect(hRes.status).toBe(200);
+        expect((await hRes.json()).ok).toBe(true);
+
+        const oaRes = await worker.fetch(new Request('https://w.example/api/v1/openapi.json'), env);
+        expect(oaRes.status).toBe(200);
+        expect((await oaRes.json()).openapi).toBe('3.1.0');
+
+        const optRes = await worker.fetch(new Request('https://w.example/api/v1/ingest', {
+            method: 'OPTIONS',
+            headers: { Origin: 'https://imhahac.github.io' },
+        }), env);
+        expect(optRes.headers.get('Access-Control-Allow-Methods')).toContain('PATCH');
+
+        // 2. whoami
+        const whoRes = await worker.fetch(new Request('https://w.example/api/v1/whoami', {
+            headers: { Authorization: 'Bearer my-super-secret-token-2026' },
+        }), env);
+        expect((await whoRes.json()).role).toBe('admin');
+
+        // 3. dryRun does NOT write to KV
+        const dryRes = await worker.fetch(new Request('https://w.example/api/v1/ingest?channel=v2test&dryRun=true', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: 'Bearer my-super-secret-token-2026' },
+            body: JSON.stringify({ activity: { id: 'a-dry', title: 'Dry' } }),
+        }), env);
+        const dryBody = await dryRes.json();
+        expect(dryBody.dryRun).toBe(true);
+        expect(dryBody.projectedSummary.activities).toBe(1);
+        expect(mockKV.store.size).toBe(0);
+
+        // 4. Write real items + PATCH partial update + single-item DELETE Tombstone
+        await worker.fetch(new Request('https://w.example/api/v1/ingest?channel=v2test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: 'Bearer my-super-secret-token-2026' },
+            body: JSON.stringify({
+                activity: { id: 'a1', title: 'Dinner', startDate: '2026-12-25', lat: 35.66, lng: 139.73 },
+                expense: { id: 'e1', title: '=CMD|calc', amount: 1500, currency: 'JPY', date: '2026-12-25' },
+                todo: { id: 'td1', title: 'Buy Pass', isDone: false, dueDate: '2026-12-20' },
+            }),
+        }), env);
+
+        const patchRes = await worker.fetch(new Request('https://w.example/api/v1/ingest?channel=v2test', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', Authorization: 'Bearer my-super-secret-token-2026' },
+            body: JSON.stringify({ todo: { id: 'td1', isDone: true } }),
+        }), env);
+        expect(patchRes.status).toBe(200);
+
+        const delRes = await worker.fetch(new Request('https://w.example/api/v1/ingest?channel=v2test&type=activities&id=a1', {
+            method: 'DELETE',
+            headers: { Authorization: 'Bearer my-super-secret-token-2026' },
+        }), env);
+        expect(delRes.status).toBe(200);
+
+        // 5. Filtered GET + Tombstones check
+        const fRes = await worker.fetch(new Request('https://w.example/api/v1/ingest?channel=v2test&type=todos,activities', {
+            headers: { Authorization: 'Bearer my-super-secret-token-2026' },
+        }), env);
+        const fBody = await fRes.json();
+        expect(fBody.filtered).toBe(true);
+        expect(fBody.data.activities).toHaveLength(0);
+        expect(fBody.data.todos[0].isDone).toBe(true);
+        expect(fBody.tombstones.some((t) => t.type === 'activities' && t.id === 'a1')).toBe(true);
+
+        // 6. Channels list excludes api_subkeys_registry
+        await mockKV.put('api_subkeys_registry', '[]');
+        const chRes = await worker.fetch(new Request('https://w.example/api/v1/channels', {
+            headers: { Authorization: 'Bearer my-super-secret-token-2026' },
+        }), env);
+        const chBody = await chRes.json();
+        expect(chBody.channels).toContain('v2test');
+        expect(chBody.channels).not.toContain('api_subkeys_registry');
+
+        // 7. Export CSV neutralizes formula injection (=CMD -> '=CMD)
+        const csvRes = await worker.fetch(new Request('https://w.example/api/v1/export?channel=v2test&format=csv', {
+            headers: { Authorization: 'Bearer my-super-secret-token-2026' },
+        }), env);
+        const csvText = await csvRes.text();
+        expect(csvText).toContain('"\'=CMD|calc"');
+    });
 });
