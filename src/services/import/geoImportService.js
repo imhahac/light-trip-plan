@@ -628,6 +628,49 @@ export function parseGpxTrack(gpxText) {
 }
 
 /**
+ * 將 GPX 軌跡點轉為依海拔坡度著色的 GeoJSON FeatureCollection
+ * - 下坡 (< -4%): 天藍 (#0284c7)
+ * - 平緩 (-4% ~ 4%): 翡翠綠 (#10b981)
+ * - 中坡 (4% ~ 10%): 琥珀橘 (#f59e0b)
+ * - 陡坡 (> 10%): 玫瑰紅 (#e11d48)
+ */
+export function buildGradedTrackGeoJson(points = []) {
+    if (!Array.isArray(points) || points.length < 2) {
+        return { type: 'FeatureCollection', features: [] };
+    }
+    const features = [];
+    for (let i = 1; i < points.length; i++) {
+        const prev = points[i - 1];
+        const curr = points[i];
+        const distM = trackHaversineKm(prev.lat, prev.lng, curr.lat, curr.lng) * 1000;
+        let gradePct = 0;
+        if (prev.ele != null && curr.ele != null && distM > 1) {
+            gradePct = ((curr.ele - prev.ele) / distM) * 100;
+        }
+        let gradeColor = '#10b981';
+        if (gradePct > 10) gradeColor = '#e11d48';
+        else if (gradePct > 4) gradeColor = '#f59e0b';
+        else if (gradePct < -4) gradeColor = '#0284c7';
+
+        features.push({
+            type: 'Feature',
+            properties: {
+                gradePct: Math.round(gradePct * 10) / 10,
+                gradeColor,
+            },
+            geometry: {
+                type: 'LineString',
+                coordinates: [
+                    [Number(prev.lng), Number(prev.lat)],
+                    [Number(curr.lng), Number(curr.lat)],
+                ],
+            },
+        });
+    }
+    return { type: 'FeatureCollection', features };
+}
+
+/**
  * 比較「計畫 GPX」與「實錄 GPX」的里程、爬升與耗時差異
  */
 export function compareGpxTracks(planned, recorded) {

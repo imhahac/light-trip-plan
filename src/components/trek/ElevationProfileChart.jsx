@@ -12,14 +12,17 @@ import {
     Tooltip,
     CartesianGrid,
 } from 'recharts';
-import { Mountain, Upload, X, ArrowUpRight, ArrowDownRight, Clock, Route } from 'lucide-react';
+import { Mountain, Upload, X, ArrowUpRight, ArrowDownRight, Clock, Route, BookmarkPlus, Compass, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { parseGpxTrack, compareGpxTracks } from '../../services/import/geoImportService';
+import { findCorridorPOIs } from '../../services/places/placeSearchService';
 import { useI18n } from '../../i18n';
 
-export default function ElevationProfileChart({ plannedTrack, onClearPlanned }) {
+export default function ElevationProfileChart({ plannedTrack, onClearPlanned, onSaveTour = null, onAddCorridorPoi = null }) {
     const { t } = useI18n();
     const [recordedTrack, setRecordedTrack] = useState(null);
+    const [corridorPois, setCorridorPois] = useState([]);
+    const [isSearchingCorridor, setIsSearchingCorridor] = useState(false);
     const fileInputRef = useRef(null);
 
     if (!plannedTrack || !plannedTrack.sampledPoints || plannedTrack.sampledPoints.length === 0) {
@@ -27,6 +30,28 @@ export default function ElevationProfileChart({ plannedTrack, onClearPlanned }) 
     }
 
     const diff = recordedTrack ? compareGpxTracks(plannedTrack, recordedTrack) : null;
+
+    const handleSearchCorridor = async (cat) => {
+        setIsSearchingCorridor(true);
+        try {
+            const res = await findCorridorPOIs(plannedTrack.points || plannedTrack.sampledPoints, cat, 500);
+            if (!res.ok) {
+                if (res.reason === 'bbox_too_large') {
+                    toast.warning('軌跡範圍過大（>150km），請載入單日路段軌跡再查詢沿途補給');
+                } else if (res.reason === 'offline') {
+                    toast.info('目前為離線模式，無法查詢沿途補給點');
+                }
+                setCorridorPois([]);
+                return;
+            }
+            setCorridorPois(res.items || []);
+            if (res.items.length === 0) {
+                toast.info('沿途 500 公尺內未找到相符補給點');
+            }
+        } finally {
+            setIsSearchingCorridor(false);
+        }
+    };
 
     const handleUploadRecorded = async (e) => {
         const file = e.target.files?.[0];
@@ -64,7 +89,17 @@ export default function ElevationProfileChart({ plannedTrack, onClearPlanned }) 
                         <span className="text-slate-500 font-medium truncate max-w-[160px]">· {plannedTrack.name}</span>
                     )}
                 </div>
-                <div className="flex items-center gap-1.5">
+                <div className="flex flex-wrap items-center gap-1.5">
+                    {onSaveTour && (
+                        <button
+                            type="button"
+                            onClick={() => onSaveTour(plannedTrack)}
+                            className="px-2 py-1 rounded-md text-[11px] font-bold bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200 flex items-center gap-1"
+                        >
+                            <BookmarkPlus className="w-3 h-3" />
+                            <span>存軌跡庫</span>
+                        </button>
+                    )}
                     <input
                         ref={fileInputRef}
                         type="file"
@@ -177,6 +212,53 @@ export default function ElevationProfileChart({ plannedTrack, onClearPlanned }) 
                     此 GPX 軌跡未包含海拔 (`&lt;ele&gt;`) 數據，僅顯示距離統計。
                 </div>
             )}
+
+            {/* 沿途 500m 補給點走廊查詢 (Along the Way) */}
+            <div className="pt-2 border-t border-slate-100 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-1.5 text-[11px]">
+                    <span className="font-bold text-slate-600 flex items-center gap-1">
+                        <Compass className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>沿途 500m 補給探索：</span>
+                    </span>
+                    <div className="flex items-center gap-1">
+                        {[
+                            { key: 'convenience', label: '🏪 超商' },
+                            { key: 'toilets', label: '🚻 廁所' },
+                            { key: 'sights', label: '🏛️ 觀景台' },
+                        ].map((c) => (
+                            <button
+                                key={c.key}
+                                type="button"
+                                disabled={isSearchingCorridor}
+                                onClick={() => handleSearchCorridor(c.key)}
+                                className="px-2 py-0.5 rounded-md bg-slate-100 hover:bg-emerald-50 text-slate-700 hover:text-emerald-700 border border-slate-200 font-bold disabled:opacity-50"
+                            >
+                                {c.label}
+                            </button>
+                        ))}
+                        {isSearchingCorridor && <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-600" />}
+                    </div>
+                </div>
+                {corridorPois.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
+                        {corridorPois.map((poi) => (
+                            <div key={poi.id} className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-[11px]">
+                                <span className="font-bold text-slate-800">{poi.name}</span>
+                                <span className="text-emerald-700 font-mono text-[10px]">+{poi.detourMeters}m</span>
+                                {onAddCorridorPoi && (
+                                    <button
+                                        type="button"
+                                        onClick={() => onAddCorridorPoi(poi)}
+                                        className="px-1.5 py-0.5 rounded bg-indigo-600 hover:bg-indigo-700 text-white text-[10px] font-bold"
+                                    >
+                                        ＋加入
+                                    </button>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
         </div>
     );
 }

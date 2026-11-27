@@ -4,7 +4,7 @@
  */
 
 export const DB_NAME = 'treklite_db';
-export const DB_VERSION = 3;
+export const DB_VERSION = 4;
 
 export const STORES = {
     TRIPS: 'trips',
@@ -27,6 +27,8 @@ export const STORES = {
     SETTLEMENT_LOGS: 'settlementLogs',
     FILE_TRASH: 'fileTrash',
     COLLAB_ITEMS: 'collabItems',
+    // v4 Light Tours：持久化 GPX 戶外軌跡收藏庫
+    SAVED_TOURS: 'savedTours',
 };
 
 export function setupIndexedDBSchema(db) {
@@ -153,5 +155,12 @@ export function setupIndexedDBSchema(db) {
         const store = db.createObjectStore(STORES.COLLAB_ITEMS, { keyPath: 'id' });
         store.createIndex('tripId', 'tripId', { unique: false });
         store.createIndex('kind', 'kind', { unique: false });
+    }
+
+    // 19. Saved Tours (v4 持久化 GPX 戶外軌跡收藏庫)
+    if (!db.objectStoreNames.contains(STORES.SAVED_TOURS)) {
+        const store = db.createObjectStore(STORES.SAVED_TOURS, { keyPath: 'id' });
+        store.createIndex('tripId', 'tripId', { unique: false });
+        store.createIndex('createdAt', 'createdAt', { unique: false });
     }
 }

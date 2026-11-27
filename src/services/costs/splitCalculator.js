@@ -110,3 +110,45 @@ export function calculateNetBalances(expenses) {
 
     return balances;
 }
+
+/**
+ * 計算每人花費明細總覽 (Per-Person Summary)：實付總額、應分攤總額、淨餘額
+ * 同時相容單一付款人 (paidBy) 與多人共同墊付 (payers)
+ * @param {Array<Object>} expenses
+ * @returns {Array<{ user: string, totalPaid: number, totalShare: number, netBalance: number }>}
+ */
+export function calculatePerPersonSummary(expenses = []) {
+    const map = {};
+    const ensure = (u) => {
+        if (!u) return null;
+        if (!map[u]) map[u] = { user: u, totalPaid: 0, totalShare: 0, netBalance: 0 };
+        return map[u];
+    };
+
+    for (const exp of expenses) {
+        if (!exp) continue;
+        if (Array.isArray(exp.payers) && exp.payers.length > 0) {
+            for (const p of exp.payers) {
+                const row = ensure(p.userId);
+                if (row) row.totalPaid += Math.round(Number(p.amount) || 0);
+            }
+        } else if (exp.paidBy) {
+            const row = ensure(exp.paidBy);
+            if (row) row.totalPaid += Math.round(Number(exp.baseAmount ?? exp.amount) || 0);
+        }
+
+        if (exp.shares && typeof exp.shares === 'object') {
+            for (const [u, shareAmt] of Object.entries(exp.shares)) {
+                const row = ensure(u);
+                if (row) row.totalShare += Math.round(Number(shareAmt) || 0);
+            }
+        }
+    }
+
+    return Object.values(map)
+        .map((row) => ({
+            ...row,
+            netBalance: row.totalPaid - row.totalShare,
+        }))
+        .sort((a, b) => b.totalPaid - a.totalPaid);
+}

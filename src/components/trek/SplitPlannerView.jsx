@@ -44,7 +44,7 @@ import {
     useOverrideDataContext,
 } from '../../contexts/DataContext';
 import { getUnifiedReservations } from '../../services/reservations/unifiedReservationService';
-import { placeItemRepo, collabItemRepo } from '../../services/db';
+import { placeItemRepo, collabItemRepo, savedTourRepo } from '../../services/db';
 import { getStoredApiSyncConfig, pushToIngestApi, pullFromIngestApi } from '../../services/api/ingestApiService';
 import { STORAGE_KEYS } from '../../constants/storageKeys';
 import { useLocalStorage } from '../../hooks/useLocalStorage';
@@ -69,7 +69,32 @@ export default function SplitPlannerView({ defaultSubTab = 'daily' }) {
     const [routeGeometry, setRouteGeometry] = useState(null);
     const [isFullTripMode, setIsFullTripMode] = useState(false);
     const [gpxTrack, setGpxTrack] = useState(null);
+    const [savedTours, setSavedTours] = useState([]);
     const [showCollabPanel, setShowCollabPanel] = useState(false);
+
+    const loadSavedTours = useCallback(async () => {
+        const list = await savedTourRepo.getAll().catch(() => []);
+        list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+        setSavedTours(list);
+    }, []);
+
+    useEffect(() => {
+        loadSavedTours();
+    }, [loadSavedTours]);
+
+    const handleSaveTourToCollection = async (track) => {
+        if (!track) return;
+        const entry = {
+            ...track,
+            id: createStableId('tour_'),
+            tripId: activeTrip?.id || null,
+            name: track.name || `GPX 軌跡 (${track.totalDistanceKm} km)`,
+            createdAt: Date.now(),
+        };
+        await savedTourRepo.save(entry);
+        await loadSavedTours();
+        toast.success(`💾 已收藏軌跡「${entry.name}」至個人軌跡庫`);
+    };
 
     // 旅程編輯 Modal 狀態
     const [isEditTripModalOpen, setIsEditTripModalOpen] = useState(false);
@@ -503,6 +528,24 @@ export default function SplitPlannerView({ defaultSubTab = 'daily' }) {
                                     <span>互動地圖視窗 (向量圖資 & 路線導航)</span>
                                 </span>
                                 <div className="flex items-center gap-1.5">
+                                    {savedTours.length > 0 && (
+                                        <select
+                                            value=""
+                                            onChange={(e) => {
+                                                const found = savedTours.find((t) => t.id === e.target.value);
+                                                if (found) setGpxTrack(found);
+                                            }}
+                                            className="px-2 py-0.5 rounded bg-white border border-slate-200 text-[11px] font-bold text-slate-700 max-w-[120px]"
+                                            title="載入已收藏的戶外軌跡"
+                                        >
+                                            <option value="">軌跡庫 ({savedTours.length})</option>
+                                            {savedTours.map((tour) => (
+                                                <option key={tour.id} value={tour.id}>
+                                                    {tour.name} ({tour.totalDistanceKm}km)
+                                                </option>
+                                            ))}
+                                        </select>
+                                    )}
                                     <label
                                         className="px-2 py-0.5 rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 text-[11px] font-bold cursor-pointer flex items-center gap-1 transition"
                                         title="載入 GPX 戶外軌跡並檢視海拔高度剖面圖"
@@ -535,6 +578,8 @@ export default function SplitPlannerView({ defaultSubTab = 'daily' }) {
                                     <ElevationProfileChart
                                         plannedTrack={gpxTrack}
                                         onClearPlanned={() => setGpxTrack(null)}
+                                        onSaveTour={handleSaveTourToCollection}
+                                        onAddCorridorPoi={handleAddPoiToDay}
                                     />
                                 </div>
                             )}

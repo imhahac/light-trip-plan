@@ -158,6 +158,40 @@ export function generateTripIcs(trip, dayPlans = [], reservations = [], todos = 
 }
 
 /**
+ * 將多趟旅程合併匯出為單一 RFC 5545 .ics 行事曆訂閱檔 (Across All Trips ICS)
+ * @param {Array<Object>} trips
+ * @param {Array<Object>} allDayPlans
+ * @param {Array<Object>} allReservations
+ * @param {Array<Object>} allTodos
+ */
+export function generateAllTripsIcs(trips = [], allDayPlans = [], allReservations = [], allTodos = []) {
+    const header = [
+        'BEGIN:VCALENDAR',
+        'VERSION:2.0',
+        'PRODID:-//LightTripPlan//All Trips Calendar//EN',
+        'CALSCALE:GREGORIAN',
+        'METHOD:PUBLISH',
+        'X-WR-CALNAME:Light Trip Plan (All Trips)',
+        'X-WR-TIMEZONE:Asia/Taipei',
+    ];
+
+    const eventBlocks = [];
+    for (const trip of trips) {
+        if (!trip?.id) continue;
+        const tripDays = allDayPlans.filter((d) => d.tripId === trip.id);
+        const tripRes = allReservations.filter((r) => r.tripId === trip.id);
+        const tripTodos = allTodos.filter((t) => t.tripId === trip.id);
+        const singleIcs = generateTripIcs(trip, tripDays, tripRes, tripTodos);
+        const matches = singleIcs.match(/BEGIN:VEVENT[\s\S]*?END:VEVENT/g);
+        if (matches) {
+            eventBlocks.push(...matches);
+        }
+    }
+
+    return [...header, ...eventBlocks, 'END:VCALENDAR'].join('\r\n');
+}
+
+/**
  * 觸發瀏覽器下載 .ics 檔案
  * @param {string} filename
  * @param {string} icsContent

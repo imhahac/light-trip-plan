@@ -35,6 +35,8 @@ import SplitPlannerView from './components/trek/SplitPlannerView';
 import CostManager from './components/trek/CostManager';
 import PackingAndTodoManager from './components/trek/PackingAndTodoManager';
 import { useTrek, TrekProvider } from './contexts/TrekContext';
+import { useI18n } from './i18n';
+import { todoRepo } from './services/db';
 
 // ── Workspaces Definition (商業分組導航) ──────────────────────────────────
 const WORKSPACES = [
@@ -110,8 +112,9 @@ const CONTENT_COMPONENT_BY_TAB = {
 };
 
 function AppContent() {
+    const { t } = useI18n();
     const { activeTab, setActiveTab, workspaceTabs = {}, ticketScope = 'trip', setTicketScope } = useUIContext();
-    const { activeTrip, viewMode = 'split', setViewMode, isLoading, isSharedView, refreshTrips } = useTrek();
+    const { activeTrip, viewMode = 'split', setViewMode, isLoading, isSharedView, sharedScopes, refreshTrips } = useTrek();
     const { renderError } = useFilterContext();
     const ticketContext = useTicketDataContext?.() || {};
     const hotelContext = useHotelDataContext?.() || {};
@@ -119,6 +122,32 @@ function AppContent() {
     const overrideContext = useOverrideDataContext?.() || {};
 
     const hasAutoPulledRef = useRef(false);
+
+    // Phase 5C.3: 每個 session 僅檢查一次 3 天內到期或已逾期的行前待辦
+    useEffect(() => {
+        if (isLoading || isSharedView) return;
+        try {
+            if (window.sessionStorage?.getItem('ltp_todo_reminded') === '1') return;
+        } catch {
+            // ignore
+        }
+        (async () => {
+            try {
+                const todos = await todoRepo.getAll().catch(() => []);
+                const today = new Date();
+                const in3Days = new Date(today.getTime() + 3 * 86400000).toISOString().slice(0, 10);
+                const urgent = todos.filter((td) => !td.isDone && td.dueDate && td.dueDate <= in3Days);
+                if (urgent.length > 0) {
+                    toast.warning(`⏰ 您有 ${urgent.length} 項行前待辦已逾期或將於 3 天內到期`, {
+                        description: urgent.slice(0, 2).map((u) => `${u.title} (${u.dueDate})`).join('、'),
+                    });
+                }
+                window.sessionStorage?.setItem('ltp_todo_reminded', '1');
+            } catch {
+                // ignore
+            }
+        })();
+    }, [isLoading, isSharedView]);
 
     // 開頁／重新整理自動檢查 Cloudflare KV 雲端 API 通道是否有外部新寫入資料
     useEffect(() => {
@@ -199,10 +228,31 @@ function AppContent() {
         );
     }
 
-    const currentWorkspace = WORKSPACES.find(ws => 
-        ws.tabs.some(t => t.key === activeTab) || 
+    // Phase 5D.1 & 5D.2: 依語系即時翻譯工作區分頁，並在唯讀分享模式下依 shareScopes 隱藏未公開區塊
+    const visibleWorkspaces = WORKSPACES
+        .filter((ws) => {
+            if (!isSharedView || !sharedScopes) return true;
+            if (ws.id === 'finance' && sharedScopes.includeCosts === false) return false;
+            if (ws.id === 'prep' && sharedScopes.includePacking === false) return false;
+            if (ws.id === 'tickets' && sharedScopes.includeBookings === false) return false;
+            return true;
+        })
+        .map((ws) => ({
+            ...ws,
+            label: t(`ws.${ws.id}`, ws.label),
+            tabs: ws.tabs
+                .filter((sub) => {
+                    if (!isSharedView || !sharedScopes) return true;
+                    if (sub.key === 'reservations' && sharedScopes.includeBookings === false) return false;
+                    return true;
+                })
+                .map((sub) => ({ ...sub, label: t(`tab.${sub.key}`, sub.label) })),
+        }));
+
+    const currentWorkspace = visibleWorkspaces.find(ws => 
+        ws.tabs.some(tb => tb.key === activeTab) || 
         (ws.id === 'finance' && activeTab === 'analytics')
-    ) || WORKSPACES[0];
+    ) || visibleWorkspaces[0] || WORKSPACES[0];
     const isModernTab = ['planner', 'timeline', 'reservations', 'costs', 'packing'].includes(activeTab);
     const ActiveForm = FORM_COMPONENT_BY_TAB[activeTab] || null;
     const ActiveContent = CONTENT_COMPONENT_BY_TAB[activeTab] || TabContent;
@@ -214,7 +264,7 @@ function AppContent() {
                 <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 overflow-hidden">
                     {/* Primary Workspace Navigation (商業高密度分組頁籤) */}
                     <div className="hidden md:flex items-center border-b border-slate-700 bg-slate-900 text-white px-2 pt-2 gap-1">
-                        {WORKSPACES.map(ws => {
+                        {visibleWorkspaces.map(ws => {
                             const isActiveWs = currentWorkspace.id === ws.id;
                             return (
                                 <button
@@ -350,7 +400,7 @@ function AppContent() {
                     &copy; {new Date().getFullYear()} Light Trip Plan. 智能離線旅遊規劃系統.
                 </footer>
             </div>
-            <BottomNav WORKSPACES={WORKSPACES} TABS={TABS} activeTab={activeTab} setActiveTab={setActiveTab} workspaceTabs={workspaceTabs} />
+            <BottomNav WORKSPACES={visibleWorkspaces} TABS={TABS} activeTab={activeTab} setActiveTab={setActiveTab} workspaceTabs={workspaceTabs} />
         </div>
     );
 }

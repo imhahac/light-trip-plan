@@ -60,6 +60,7 @@ export const SYNCABLE_IDB_STORES = [
     STORES.SETTLEMENT_LOGS,
     STORES.FILE_TRASH,
     STORES.COLLAB_ITEMS,
+    STORES.SAVED_TOURS,
 ];
 
 /**
@@ -387,4 +388,19 @@ export const collabItemRepo = {
     getByTrip: (tripId) => getByIndex(STORES.COLLAB_ITEMS, 'tripId', tripId),
     save: (item) => putItem(STORES.COLLAB_ITEMS, item),
     delete: (id) => deleteItem(STORES.COLLAB_ITEMS, id),
+};
+
+export const savedTourRepo = {
+    getAll: () => getAll(STORES.SAVED_TOURS),
+    getByTrip: (tripId) => getByIndex(STORES.SAVED_TOURS, 'tripId', tripId),
+    save: (tour) => {
+        const pts = Array.isArray(tour?.points) ? tour.points : [];
+        let leanPoints = pts;
+        if (pts.length > 500) {
+            const step = (pts.length - 1) / 499;
+            leanPoints = Array.from({ length: 500 }, (_, i) => pts[Math.round(i * step)]);
+        }
+        return putItem(STORES.SAVED_TOURS, { ...tour, points: leanPoints, createdAt: tour.createdAt || Date.now() });
+    },
+    delete: (id) => deleteItem(STORES.SAVED_TOURS, id),
 };

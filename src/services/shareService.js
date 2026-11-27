@@ -236,7 +236,10 @@ export function normalizeShareSnapshot(snapshot, id = 'shared') {
         itinerary: snapshot.itinerary || [],
         hotels: snapshot.hotels || [],
         activities: snapshot.activities || [],
-        tripLabels: snapshot.tripLabels || {}
+        tripLabels: snapshot.tripLabels || {},
+        packingItems: Array.isArray(snapshot.packingItems) ? snapshot.packingItems : [],
+        expenses: Array.isArray(snapshot.expenses) ? snapshot.expenses : [],
+        shareScopes: snapshot.shareScopes ?? null,
     };
 }
 

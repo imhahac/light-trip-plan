@@ -50,10 +50,11 @@ import {
     revokeSubKey,
     buildIngestCurlExamples,
 } from '../../services/api/ingestApiService';
-import { generateTripIcs, downloadIcsFile } from '../../services/export/icsExportService';
+import { generateTripIcs, generateAllTripsIcs, downloadIcsFile } from '../../services/export/icsExportService';
 import { generateTripGpx, downloadGpxFile } from '../../services/export/gpxExportService';
 import { shiftTripDates, calculateDayDifference } from '../../services/trips/tripShiftService';
-import { placeItemRepo, packingRepo, expenseRepo, todoRepo } from '../../services/db';
+import { duplicateTrip } from '../../services/trips/tripDuplicateService';
+import { tripRepo, dayPlanRepo, reservationRepo, placeItemRepo, packingRepo, expenseRepo, todoRepo } from '../../services/db';
 import { downloadDiagnosticDump } from '../../utils/diagnosticDump';
 import {
     useTicketDataContext,
@@ -1293,17 +1294,39 @@ export default function ExportImportModal({ isOpen, onClose }) {
                                                 className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5"
                                             >
                                                 <Download className="w-4 h-4" />
-                                                <span>下載 .ics 檔案</span>
+                                                <span>下載本旅程 .ics</span>
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={async () => {
+                                                    try {
+                                                        const [allTrips, allDays, allRes, allTodos] = await Promise.all([
+                                                            tripRepo.getAll(),
+                                                            dayPlanRepo.getAll().catch(() => []),
+                                                            reservationRepo.getAll().catch(() => []),
+                                                            todoRepo.getAll().catch(() => []),
+                                                        ]);
+                                                        const ics = generateAllTripsIcs(allTrips, allDays, allRes, allTodos);
+                                                        downloadIcsFile('light-trip-plan-all-trips.ics', ics);
+                                                        toast.success(`已匯出全部 ${allTrips.length} 趟旅程合併行事曆 (.ics)`);
+                                                    } catch (err) {
+                                                        toast.error(`合併匯出失敗：${err.message}`);
+                                                    }
+                                                }}
+                                                className="w-full py-1.5 bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-xl text-[11px] font-bold transition flex items-center justify-center gap-1.5"
+                                            >
+                                                <Calendar className="w-3.5 h-3.5" />
+                                                <span>匯出全部旅程合併 .ics</span>
                                             </button>
                                         </div>
 
                                         <div className="p-4 rounded-2xl border border-gray-200 bg-slate-50 space-y-2">
                                             <div className="flex items-center gap-2 text-emerald-700 font-bold text-xs">
                                                 <Compass className="w-4 h-4" />
-                                                <span>GPS 航跡與地標 (.gpx)</span>
+                                                <span>GPS 航跡與旅程複製</span>
                                             </div>
                                             <p className="text-[11px] text-slate-500 leading-relaxed">
-                                                標準 GPX 1.1 格式，匯出所有行程景點坐標點位與連續旅遊路線，可匯入 Garmin、OsmAnd、CoMaps 與 Google Earth。
+                                                匯出標準 GPX 1.1 航跡，或一鍵複製當前旅程（含日程、景點與行李範本）作為下次再訪藍圖。
                                             </p>
                                             <button
                                                 onClick={handleExportGpx}
@@ -1311,6 +1334,23 @@ export default function ExportImportModal({ isOpen, onClose }) {
                                             >
                                                 <Download className="w-4 h-4" />
                                                 <span>下載 .gpx 檔案</span>
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={async () => {
+                                                    try {
+                                                        const res = await duplicateTrip(activeTrip.id);
+                                                        await refreshTrips(res.trip.id);
+                                                        toast.success(`📋 已複製旅程「${res.trip.title}」（含 ${res.copiedPlaces} 個景點）`);
+                                                        onClose();
+                                                    } catch (err) {
+                                                        toast.error(`複製旅程失敗：${err.message}`);
+                                                    }
+                                                }}
+                                                className="w-full py-1.5 bg-white hover:bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl text-[11px] font-bold transition flex items-center justify-center gap-1.5"
+                                            >
+                                                <Copy className="w-3.5 h-3.5" />
+                                                <span>一鍵複製當前旅程 (副本)</span>
                                             </button>
                                         </div>
                                     </div>

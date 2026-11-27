@@ -51,7 +51,7 @@ import { expenseRepo, settlementLogRepo } from '../../services/db';
 import { getByokAiConfig, saveByokAiConfig, scanReceiptWithByokAI } from '../../services/ai/byokVisionService';
 import { isDateOverlap } from '../../services/reservations/unifiedReservationService';
 import { SUPPORTED_CURRENCIES, getExchangeRate, freezeExchangeRate } from '../../services/costs/currencyService';
-import { splitEqual, splitByWeights, calculateNetBalances } from '../../services/costs/splitCalculator';
+import { splitEqual, splitByWeights, calculateNetBalances, calculatePerPersonSummary } from '../../services/costs/splitCalculator';
 import { calculateSettleUpTransactions } from '../../services/costs/settleUpService';
 import { exportExpensesToCSV } from '../../services/costs/csvExportService';
 import { STORAGE_KEYS } from '../../constants/storageKeys';
@@ -468,9 +468,10 @@ export default function CostManager() {
 
     const budgetRemaining = totalBudget > 0 ? totalBudget - totalSpentTWD : null;
 
-    // 6. 智慧清帳撮合
+    // 6. 智慧清帳撮合與每人花費明細總覽 (Per-Person Summary)
     const netBalances = useMemo(() => calculateNetBalances(unifiedExpenses), [unifiedExpenses]);
     const settleTransactions = useMemo(() => calculateSettleUpTransactions(netBalances), [netBalances]);
+    const perPersonSummary = useMemo(() => calculatePerPersonSummary(unifiedExpenses), [unifiedExpenses]);
 
     // 7. 圖表分析資料 (直接由已正規化之 unifiedExpenses 依分類統計，精確無重疊)
     const pieData = useMemo(() => {
@@ -1092,6 +1093,40 @@ export default function CostManager() {
             {/* ── 模組 B：多幣別拆帳與結算 (在 split 或 all 模式顯示) ── */}
             {(subView === 'split' || subView === 'all') && (
                 <div className="space-y-6">
+                    {/* Phase 5C.1: 每人花費明細總覽表 (Per-Person Summary) */}
+                    {perPersonSummary.length > 0 && (
+                        <div className="bg-white rounded-2xl border border-slate-200/80 p-4 shadow-sm space-y-2.5">
+                            <div className="flex items-center justify-between">
+                                <h3 className="text-xs font-extrabold text-slate-700 flex items-center gap-1.5">
+                                    <Users className="w-4 h-4 text-indigo-600" />
+                                    <span>每人花費明細總覽 (Per-Person Summary · {baseCurrency})</span>
+                                </h3>
+                                <span className="text-[11px] text-slate-400">共 {perPersonSummary.length} 位成員</span>
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                                {perPersonSummary.map((row) => (
+                                    <div key={row.user} className="p-3 rounded-xl bg-slate-50 border border-slate-200/70 text-xs space-y-1">
+                                        <div className="flex items-center justify-between">
+                                            <span className="font-extrabold text-slate-900">{row.user}</span>
+                                            <span className={`font-mono font-black px-2 py-0.5 rounded-full text-[11px] ${
+                                                row.netBalance > 0
+                                                    ? 'bg-emerald-100 text-emerald-700'
+                                                    : row.netBalance < 0
+                                                        ? 'bg-rose-100 text-rose-700'
+                                                        : 'bg-slate-200 text-slate-600'
+                                            }`}>
+                                                {row.netBalance > 0 ? `+${row.netBalance.toLocaleString()}` : row.netBalance.toLocaleString()}
+                                            </span>
+                                        </div>
+                                        <div className="flex items-center justify-between text-[11px] text-slate-500 font-mono">
+                                            <span>實付 {row.totalPaid.toLocaleString()}</span>
+                                            <span>應攤 {row.totalShare.toLocaleString()}</span>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
                     {/* 預算、總支出與清帳狀態概覽 */}
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                         <div className="bg-gradient-to-tr from-slate-900 via-indigo-950 to-slate-950 rounded-2xl p-5 text-white shadow-md">

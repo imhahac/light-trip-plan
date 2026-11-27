@@ -405,11 +405,16 @@ export default function TripBrochureModal({
                                                             {plIdx + 1}
                                                         </span>
                                                         <span className="font-bold text-slate-900 text-sm">{place.name}</span>
+                                                        {Number(place.rating) > 0 && (
+                                                            <span className="text-[11px] text-amber-500 font-bold">
+                                                                {'★'.repeat(Math.min(5, Math.round(Number(place.rating))))}
+                                                            </span>
+                                                        )}
                                                     </div>
-                                                    {includePhotos && (place.enrichment?.thumbnailUrl || place.photoUrl) && (
+                                                    {includePhotos && (place.customPhotoUrl || place.enrichment?.thumbnailUrl || place.photoUrl) && (
                                                         <div className="pl-7 pt-1">
                                                             <img
-                                                                src={place.enrichment?.thumbnailUrl || place.photoUrl}
+                                                                src={place.customPhotoUrl || place.enrichment?.thumbnailUrl || place.photoUrl}
                                                                 alt={place.name}
                                                                 className="w-28 h-20 object-cover rounded-lg border border-slate-200"
                                                             />

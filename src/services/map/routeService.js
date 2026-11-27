@@ -7,44 +7,158 @@
  */
 
 import { logger } from '../../utils/logger';
+import { isEffectivelyOffline } from '../sync/offlineModeService';
+
+const OSRM_TIMEOUT_MS = 8000;
+const FALLBACK_SPEED_KMH = {
+    walking: 4.5,
+    cycling: 15,
+    driving: 35,
+};
+
+function haversineKm(a, b) {
+    const toRad = (deg) => (deg * Math.PI) / 180;
+    const R = 6371;
+    const dLat = toRad(Number(b.lat) - Number(a.lat));
+    const dLng = toRad(Number(b.lng) - Number(a.lng));
+    const s =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(Number(a.lat))) * Math.cos(toRad(Number(b.lat))) * Math.sin(dLng / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
+}
+
+function buildFallbackRoute(coordinates, profile = 'driving') {
+    let dist = 0;
+    for (let i = 1; i < coordinates.length; i++) {
+        dist += haversineKm(coordinates[i - 1], coordinates[i]) * 1.22;
+    }
+    const speed = FALLBACK_SPEED_KMH[profile] || 35;
+    return {
+        distanceKm: Math.round(dist * 10) / 10,
+        durationMinutes: Math.max(1, Math.round((dist / speed) * 60)),
+        geometry: {
+            type: 'LineString',
+            coordinates: coordinates.map((c) => [Number(c.lng), Number(c.lat)]),
+        },
+        estimated: true,
+        profile,
+    };
+}
 
 /**
- * 透過 OSRM 計算實際道路行車/步行線段
+ * 依交通模式選擇對應的免費 OSRM 路網節點：
+ * - walking -> routing.openstreetmap.de/routed-foot
+ * - cycling -> routing.openstreetmap.de/routed-bike
+ * - driving -> router.project-osrm.org (car)
+ */
+export function buildOsrmEndpointUrl(coordString, profile = 'driving') {
+    if (profile === 'walking') {
+        return `https://routing.openstreetmap.de/routed-foot/route/v1/driving/${coordString}?overview=full&geometries=geojson`;
+    }
+    if (profile === 'cycling') {
+        return `https://routing.openstreetmap.de/routed-bike/route/v1/driving/${coordString}?overview=full&geometries=geojson`;
+    }
+    return `https://router.project-osrm.org/route/v1/driving/${coordString}?overview=full&geometries=geojson`;
+}
+
+/**
+ * 透過 OSRM 計算實際道路行車/步行/自行車線段（含 8s Timeout、離線短路與自動均速降級）
  * @param {Array<{lat: number, lng: number}>} coordinates - 順序經緯度
  * @param {'driving' | 'walking' | 'cycling'} profile
- * @returns {Promise<{distanceKm: number, durationMinutes: number, geometry: Object}|null>}
+ * @returns {Promise<{distanceKm: number, durationMinutes: number, geometry: Object, estimated?: boolean, profile: string}|null>}
  */
 export async function getOSRMRoute(coordinates, profile = 'driving') {
     if (!coordinates || coordinates.length < 2) return null;
 
+    if (isEffectivelyOffline()) {
+        return buildFallbackRoute(coordinates, profile);
+    }
+
     // OSRM 格式為: lng,lat;lng,lat;...
     const coordString = coordinates
-        .map(c => `${c.lng.toFixed(5)},${c.lat.toFixed(5)}`)
+        .map(c => `${Number(c.lng).toFixed(5)},${Number(c.lat).toFixed(5)}`)
         .join(';');
 
-    const url = `https://router.project-osrm.org/route/v1/${profile}/${coordString}?overview=full&geometries=geojson`;
+    const url = buildOsrmEndpointUrl(coordString, profile);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), OSRM_TIMEOUT_MS);
 
     try {
-        const res = await fetch(url);
+        const res = await fetch(url, { signal: controller.signal });
         if (!res.ok) {
-            logger.warn(`OSRM Route request failed with status: ${res.status}`);
-            return null;
+            logger.warn(`OSRM Route (${profile}) failed with status: ${res.status}, using fallback`);
+            return buildFallbackRoute(coordinates, profile);
         }
         const data = await res.json();
         if (data.code !== 'Ok' || !data.routes || data.routes.length === 0) {
-            return null;
+            return buildFallbackRoute(coordinates, profile);
         }
 
         const route = data.routes[0];
         return {
             distanceKm: Math.round((route.distance / 1000) * 10) / 10,
-            durationMinutes: Math.round(route.duration / 60),
-            geometry: route.geometry // GeoJSON LineString { type: "LineString", coordinates: [[lng, lat], ...] }
+            durationMinutes: Math.max(1, Math.round(route.duration / 60)),
+            geometry: route.geometry,
+            estimated: false,
+            profile,
         };
     } catch (err) {
-        logger.error('OSRM route calculation error:', err);
-        return null;
+        logger.warn(`OSRM route (${profile}) error, using Haversine fallback:`, err);
+        return buildFallbackRoute(coordinates, profile);
+    } finally {
+        clearTimeout(timer);
     }
+}
+
+/**
+ * 逐段依各景點的 travelModeToNext ('driving' | 'walking' | 'cycling') 計算多段路線並合併 GeoJSON
+ * @param {Array<{ id: string, lat: number, lng: number, travelModeToNext?: string }>} places
+ */
+export async function getMultiLegRoute(places = []) {
+    const valid = places.filter(
+        (p) => Number.isFinite(Number(p?.lat)) && Number.isFinite(Number(p?.lng)) && !(Number(p.lat) === 0 && Number(p.lng) === 0)
+    );
+    if (valid.length < 2) return null;
+
+    const legTasks = [];
+    for (let i = 0; i < valid.length - 1; i++) {
+        const from = valid[i];
+        const to = valid[i + 1];
+        const mode = from.travelModeToNext || 'driving';
+        legTasks.push(
+            getOSRMRoute([from, to], mode).then((res) => ({
+                fromId: from.id,
+                toId: to.id,
+                mode,
+                distanceKm: res?.distanceKm ?? 0,
+                durationMinutes: res?.durationMinutes ?? 0,
+                estimated: Boolean(res?.estimated),
+                coordinates: res?.geometry?.coordinates || [[Number(from.lng), Number(from.lat)], [Number(to.lng), Number(to.lat)]],
+            }))
+        );
+    }
+
+    const legs = await Promise.all(legTasks);
+    const mergedCoords = [];
+    let totalDistanceKm = 0;
+    let totalDurationMinutes = 0;
+
+    legs.forEach((leg, idx) => {
+        totalDistanceKm += leg.distanceKm;
+        totalDurationMinutes += leg.durationMinutes;
+        const pts = idx > 0 ? leg.coordinates.slice(1) : leg.coordinates;
+        mergedCoords.push(...pts);
+    });
+
+    return {
+        distanceKm: Math.round(totalDistanceKm * 10) / 10,
+        durationMinutes: totalDurationMinutes,
+        legs,
+        geometry: {
+            type: 'LineString',
+            coordinates: mergedCoords,
+        },
+    };
 }
 
 /**

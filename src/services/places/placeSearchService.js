@@ -183,3 +183,73 @@ export async function enrichPlaceWithWikipedia(placeName) {
         clearTimeout(timer);
     }
 }
+
+function quickHaversineMeters(lat1, lng1, lat2, lng2) {
+    const toRad = (deg) => (deg * Math.PI) / 180;
+    const R = 6371000;
+    const dLat = toRad(lat2 - lat1);
+    const dLng = toRad(lng2 - lng1);
+    const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/**
+ * 沿途補給點走廊查詢 (Along the Way)：
+ * 檢核軌跡 BBox 是否超限 (>1.5°)，再篩選距離軌跡 <= radiusMeters 之補給點並計算繞道距離。
+ * @param {Array<{lat: number, lng: number}>} trackPoints
+ * @param {'convenience' | 'toilets' | 'sights' | 'food'} category
+ * @param {number} [radiusMeters=500]
+ */
+export async function findCorridorPOIs(trackPoints = [], category = 'convenience', radiusMeters = 500) {
+    if (!Array.isArray(trackPoints) || trackPoints.length === 0) {
+        return { ok: false, reason: 'empty_track', items: [] };
+    }
+    if (isEffectivelyOffline()) {
+        return { ok: false, reason: 'offline', items: [] };
+    }
+
+    let south = Infinity;
+    let north = -Infinity;
+    let west = Infinity;
+    let east = -Infinity;
+    for (const pt of trackPoints) {
+        const lat = Number(pt.lat);
+        const lng = Number(pt.lng);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+        if (lat < south) south = lat;
+        if (lat > north) north = lat;
+        if (lng < west) west = lng;
+        if (lng > east) east = lng;
+    }
+
+    const pad = Math.min(0.02, (radiusMeters / 111000) * 1.5);
+    const bbox = { south: south - pad, north: north + pad, west: west - pad, east: east + pad };
+    if (Math.abs(bbox.north - bbox.south) > OVERPASS_MAX_BBOX_SPAN_DEG || Math.abs(bbox.east - bbox.west) > OVERPASS_MAX_BBOX_SPAN_DEG) {
+        return { ok: false, reason: 'bbox_too_large', items: [] };
+    }
+
+    const candidates = await fetchViewportPOIs(bbox, category, 40);
+    // 最多抽樣 80 個軌跡點做最短距離篩選，兼顧精準度與效能
+    const stride = Math.max(1, Math.floor(trackPoints.length / 80));
+    const sampled = trackPoints.filter((_, idx) => idx % stride === 0);
+
+    const matched = [];
+    for (const poi of candidates) {
+        let minDistM = Infinity;
+        for (const pt of sampled) {
+            const d = quickHaversineMeters(Number(poi.lat), Number(poi.lng), Number(pt.lat), Number(pt.lng));
+            if (d < minDistM) minDistM = d;
+        }
+        if (minDistM <= radiusMeters) {
+            matched.push({
+                ...poi,
+                detourMeters: Math.round(minDistM),
+            });
+        }
+    }
+
+    matched.sort((a, b) => a.detourMeters - b.detourMeters);
+    return { ok: true, items: matched.slice(0, 15) };
+}

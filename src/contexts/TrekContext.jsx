@@ -272,6 +272,7 @@ export function TrekProvider({ children }) {
         viewMode,
         setViewMode,
         sharedTripData,
+        sharedScopes: sharedTripData?.shareScopes || null,
         isSharedView: Boolean(sharedTripData),
         importSharedTripToLocal,
         exitSharedView,

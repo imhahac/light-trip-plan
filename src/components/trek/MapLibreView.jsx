@@ -10,8 +10,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { Loader2, Mountain, Layers, Route } from 'lucide-react';
+import { Loader2, Mountain, Layers, Route, Image as ImageIcon } from 'lucide-react';
 import { fetchViewportPOIs } from '../../services/places/placeSearchService';
+import { buildGradedTrackGeoJson } from '../../services/import/geoImportService';
+import { sanitizeImageUrl } from '../../utils/imageSafety';
 import { useI18n } from '../../i18n';
 
 function escapeHtml(str) {
@@ -152,6 +154,7 @@ export default function MapLibreView({
     const [currentStyleId, setCurrentStyleId] = useState('streets');
     const [is3dTerrain, setIs3dTerrain] = useState(false);
     const [useCluster, setUseCluster] = useState(false);
+    const [showPhotoMarkers, setShowPhotoMarkers] = useState(false);
     const [poiCategory, setPoiCategory] = useState(null); // 'sights' | 'food' | 'convenience' | null
     const [pois, setPois] = useState([]);
     const [isFetchingPoi, setIsFetchingPoi] = useState(false);
@@ -343,21 +346,46 @@ export default function MapLibreView({
 
                 const isActive = place.id === activePlaceId;
                 const isHotel = place.isAnchorStart || place.isAnchorEnd || place.category === 'hotel';
+                const safePhoto = showPhotoMarkers
+                    ? sanitizeImageUrl(place.customPhotoUrl || place.enrichment?.thumbnailUrl || '')
+                    : '';
 
-                el.innerHTML = `
-                    <div class="relative flex items-center justify-center w-7 h-7 rounded-full shadow-lg font-black text-xs transition-transform duration-150 transform group-hover:scale-125 border-2 border-white ${
-                        isActive 
-                            ? 'bg-rose-500 text-white ring-4 ring-rose-300' 
-                            : isHotel 
-                                ? 'bg-amber-500 text-white' 
-                                : 'bg-indigo-600 text-white'
-                    }">
-                        <span>${isHotel ? '🏨' : place._idx}</span>
-                        <div class="absolute left-1/2 -translate-x-1/2 bottom-8 hidden group-hover:block bg-slate-900/90 text-white text-[11px] font-bold px-2 py-1 rounded shadow-md whitespace-nowrap z-50 pointer-events-none">
-                            ${escapeHtml(place.name)}
+                if (safePhoto) {
+                    const wrap = document.createElement('div');
+                    wrap.className = `relative flex items-center justify-center w-9 h-9 rounded-full shadow-lg overflow-hidden border-2 transition-transform duration-150 transform group-hover:scale-125 ${
+                        isActive ? 'border-rose-500 ring-4 ring-rose-300' : 'border-white bg-indigo-600'
+                    }`;
+                    const img = document.createElement('img');
+                    img.src = safePhoto;
+                    img.alt = place.name || '';
+                    img.className = 'w-full h-full object-cover';
+                    img.onerror = () => {
+                        img.remove();
+                        const fb = document.createElement('span');
+                        fb.className = 'text-white font-black text-xs';
+                        fb.textContent = isHotel ? '🏨' : String(place._idx);
+                        wrap.appendChild(fb);
+                    };
+                    wrap.appendChild(img);
+                    el.style.width = '38px';
+                    el.style.height = '38px';
+                    el.appendChild(wrap);
+                } else {
+                    el.innerHTML = `
+                        <div class="relative flex items-center justify-center w-7 h-7 rounded-full shadow-lg font-black text-xs transition-transform duration-150 transform group-hover:scale-125 border-2 border-white ${
+                            isActive 
+                                ? 'bg-rose-500 text-white ring-4 ring-rose-300' 
+                                : isHotel 
+                                    ? 'bg-amber-500 text-white' 
+                                    : 'bg-indigo-600 text-white'
+                        }">
+                            <span>${isHotel ? '🏨' : place._idx}</span>
+                            <div class="absolute left-1/2 -translate-x-1/2 bottom-8 hidden group-hover:block bg-slate-900/90 text-white text-[11px] font-bold px-2 py-1 rounded shadow-md whitespace-nowrap z-50 pointer-events-none">
+                                ${escapeHtml(place.name)}
+                            </div>
                         </div>
-                    </div>
-                `;
+                    `;
+                }
 
                 el.addEventListener('click', (e) => {
                     e.stopPropagation();
@@ -378,7 +406,7 @@ export default function MapLibreView({
         } else if (validPlaces.length === 1) {
             map.flyTo({ center: [validPlaces[0].lng, validPlaces[0].lat], zoom: 14, duration: 600 });
         }
-    }, [places, activePlaceId, isMapLoaded, styleVersion, useCluster, onPlaceClick]);
+    }, [places, activePlaceId, isMapLoaded, styleVersion, useCluster, showPhotoMarkers, onPlaceClick]);
 
     // 2.5 繪製 Overpass 探索出的周邊 POI Marker（點擊可直接加入當日行程）
     useEffect(() => {
@@ -468,7 +496,7 @@ export default function MapLibreView({
         }
     }, [routeGeometry, isMapLoaded, styleVersion]);
 
-    // 3.5 繪製 GPX 戶外軌跡線 (Light Tours)
+    // 3.5 繪製 GPX 戶外軌跡線（依坡度百分比自動著色：下坡藍 / 平緩綠 / 中坡橘 / 陡坡紅）
     useEffect(() => {
         const map = mapRef.current;
         if (!map || !isMapLoaded) return;
@@ -479,23 +507,24 @@ export default function MapLibreView({
         if (map.getSource(srcId)) map.removeSource(srcId);
 
         if (Array.isArray(gpxTrackPoints) && gpxTrackPoints.length > 1) {
-            const coords = gpxTrackPoints.map((p) => [Number(p.lng), Number(p.lat)]);
+            const gradedGeoJson = buildGradedTrackGeoJson(gpxTrackPoints);
             map.addSource(srcId, {
                 type: 'geojson',
-                data: {
-                    type: 'Feature',
-                    geometry: { type: 'LineString', coordinates: coords },
-                },
+                data: gradedGeoJson,
             });
             map.addLayer({
                 id: layerId,
                 type: 'line',
                 source: srcId,
                 layout: { 'line-join': 'round', 'line-cap': 'round' },
-                paint: { 'line-color': '#10b981', 'line-width': 4, 'line-opacity': 0.9 },
+                paint: {
+                    'line-color': ['coalesce', ['get', 'gradeColor'], '#10b981'],
+                    'line-width': 4,
+                    'line-opacity': 0.92,
+                },
             });
             const bounds = new maplibregl.LngLatBounds();
-            coords.forEach((c) => bounds.extend(c));
+            gpxTrackPoints.forEach((p) => bounds.extend([Number(p.lng), Number(p.lat)]));
             map.fitBounds(bounds, { padding: 50, maxZoom: 15, duration: 500 });
         }
     }, [gpxTrackPoints, isMapLoaded, styleVersion]);
@@ -593,6 +622,20 @@ export default function MapLibreView({
                 >
                     <Layers className="w-3.5 h-3.5" />
                     <span>{t('map.cluster', '聚合標記')}</span>
+                </button>
+
+                <button
+                    type="button"
+                    onClick={() => setShowPhotoMarkers((v) => !v)}
+                    className={`px-2 py-1.5 rounded-lg text-[11px] font-bold shadow-md backdrop-blur-md transition flex items-center gap-1 ${
+                        showPhotoMarkers
+                            ? 'bg-rose-600 text-white'
+                            : 'bg-white/90 text-slate-700 hover:bg-white border border-gray-200'
+                    }`}
+                    title="以景點照片縮圖顯示地圖標記"
+                >
+                    <ImageIcon className="w-3.5 h-3.5" />
+                    <span>縮圖標記</span>
                 </button>
 
                 {onToggleFullTrip && (

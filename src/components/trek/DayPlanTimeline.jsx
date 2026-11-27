@@ -42,7 +42,8 @@ import { toast } from 'sonner';
 import { useTrek } from '../../contexts/TrekContext';
 import { placeItemRepo, dayPlanRepo } from '../../services/db';
 import { optimizeRouteWith2Opt, calculateTotalRouteDistance } from '../../services/map/tspService';
-import { getOSRMRoute, getGoogleMapsRouteUrl } from '../../services/map/routeService';
+import { getOSRMRoute, getMultiLegRoute, getGoogleMapsRouteUrl } from '../../services/map/routeService';
+import { sanitizeImageUrl, compressPlacePhoto } from '../../utils/imageSafety';
 import { getDayNavigationLinks, getPlaceNavigationLinks } from '../../services/map/navigationLinks';
 import { queryPublicTransitRoute } from '../../services/map/transitousService';
 import { computeRoadTripSchedule } from '../../services/map/roadTripService';
@@ -129,22 +130,51 @@ export default function DayPlanTimeline({ onSelectDayPlaces, onRouteCalculated, 
         });
     }, [activeTrip?.id, setSelectedDayByTrip]);
 
-    // 景點修改狀態 (支援改名、備註與更換所屬日程/日期)
+    // 景點修改狀態 (支援改名、備註、星等評分、安全自訂照片與更換所屬日程)
     const [editingPlace, setEditingPlace] = useState(null);
     const [editPlaceName, setEditPlaceName] = useState('');
     const [editPlaceAddress, setEditPlaceAddress] = useState('');
     const [editPlaceDayIndex, setEditPlaceDayIndex] = useState(0);
+    const [editPlaceRating, setEditPlaceRating] = useState(0);
+    const [editPlacePhotoUrl, setEditPlacePhotoUrl] = useState('');
+
+    // Phase 5A: 原生 HTML5 拖曳排序與跨天拖放狀態
+    const [draggedPlaceId, setDraggedPlaceId] = useState(null);
+    const [dragOverDayIdx, setDragOverDayIdx] = useState(null);
+    const [legStatsMap, setLegStatsMap] = useState({});
 
     const handleOpenEditPlace = (place) => {
         setEditingPlace(place);
         setEditPlaceName(place.name || '');
         setEditPlaceAddress(place.address || '');
         setEditPlaceDayIndex(place.dayIndex ?? selectedDayIndex);
+        setEditPlaceRating(Number(place.rating) || 0);
+        setEditPlacePhotoUrl(place.customPhotoUrl || '');
+    };
+
+    const handleUploadCustomPhoto = async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        try {
+            const compressed = await compressPlacePhoto(file, 480, 0.75);
+            setEditPlacePhotoUrl(compressed);
+            toast.success('已壓縮並套用自訂景點照片');
+        } catch (err) {
+            toast.error(`圖片處理失敗：${err.message}`);
+        } finally {
+            e.target.value = '';
+        }
     };
 
     const handleSaveEditPlace = async (e) => {
         e.preventDefault();
         if (!editingPlace || !editPlaceName.trim()) return;
+
+        const safePhoto = editPlacePhotoUrl.trim() ? sanitizeImageUrl(editPlacePhotoUrl) : '';
+        if (editPlacePhotoUrl.trim() && !safePhoto) {
+            toast.error('圖片網址僅支援 https:// 或壓縮圖片格式');
+            return;
+        }
 
         const originDayIndex = editingPlace.dayIndex ?? selectedDayIndex;
         const targetDayIndex = Number(editPlaceDayIndex);
@@ -155,6 +185,8 @@ export default function DayPlanTimeline({ onSelectDayPlaces, onRouteCalculated, 
             ...editingPlace,
             name: editPlaceName.trim(),
             address: editPlaceAddress.trim(),
+            rating: Number(editPlaceRating) || 0,
+            customPhotoUrl: safePhoto || null,
             dayIndex: targetDayIndex,
             orderIndex: isDayChanged ? targetPlaces.length : (editingPlace.orderIndex || 0)
         };
@@ -558,18 +590,85 @@ export default function DayPlanTimeline({ onSelectDayPlaces, onRouteCalculated, 
         }
     };
 
-    // ── OSRM 實際道路計算 ──────────────────────────────────────────────────
+    // Phase 5A.1: 拖曳景點卡片交換當日順序（支援 Undo/Redo 並清除舊路線快取）
+    const handleDropOnPlace = async (targetIdx) => {
+        if (!draggedPlaceId) return;
+        const fromIdx = activeDayPlaces.findIndex((p) => p.id === draggedPlaceId);
+        setDraggedPlaceId(null);
+        if (fromIdx === -1 || fromIdx === targetIdx) return;
+
+        const dayIdx = selectedDayIndex;
+        const beforeSnapshot = activeDayPlaces.map((p, idx) => ({ ...p, orderIndex: idx }));
+        const updated = [...beforeSnapshot];
+        const [moved] = updated.splice(fromIdx, 1);
+        updated.splice(targetIdx, 0, moved);
+        const afterSnapshot = updated.map((p, idx) => ({ ...p, orderIndex: idx }));
+
+        setRouteStats(null);
+        setLegStatsMap({});
+        if (onRouteCalculated) onRouteCalculated(null);
+
+        await undoManagerRef.current.push({
+            label: `拖曳排序 (${moved.name})`,
+            execute: async () => {
+                await placeItemRepo.saveBatch(afterSnapshot);
+                setDayPlacesMap((prev) => ({ ...prev, [dayIdx]: afterSnapshot }));
+            },
+            undo: async () => {
+                await placeItemRepo.saveBatch(beforeSnapshot);
+                setDayPlacesMap((prev) => ({ ...prev, [dayIdx]: beforeSnapshot }));
+            },
+        }, true);
+    };
+
+    // Phase 5A.1: 拖曳景點卡片放至上方 Day N 分頁標籤直接跨天移動
+    const handleDropOnDayTab = async (targetDayIndex) => {
+        setDragOverDayIdx(null);
+        if (!draggedPlaceId) return;
+        const place = activeDayPlaces.find((p) => p.id === draggedPlaceId);
+        setDraggedPlaceId(null);
+        if (!place) return;
+        setRouteStats(null);
+        setLegStatsMap({});
+        if (onRouteCalculated) onRouteCalculated(null);
+        await handleQuickMoveDay(place, targetDayIndex);
+    };
+
+    // Phase 5A.2: 單段交通模式切換 ('driving' | 'walking' | 'cycling')
+    const handleCycleLegMode = async (place) => {
+        const modes = ['driving', 'walking', 'cycling'];
+        const curIdx = modes.indexOf(place.travelModeToNext || 'driving');
+        const nextMode = modes[(curIdx + 1) % modes.length];
+        const updated = { ...place, travelModeToNext: nextMode };
+        await placeItemRepo.save(updated);
+        const nextList = activeDayPlaces.map((p) => (p.id === place.id ? updated : p));
+        setDayPlacesMap((prev) => ({ ...prev, [selectedDayIndex]: nextList }));
+        handleCalculateOSRM(nextList);
+    };
+
+    // ── OSRM 多段交通模式實際道路計算 ──────────────────────────────────────
 
     const handleCalculateOSRM = async (placesToRoute = activeDayPlaces) => {
         if (placesToRoute.length < 2) return;
-        const coords = placesToRoute.map(p => ({ lat: p.lat, lng: p.lng }));
-        const osrmResult = await getOSRMRoute(coords, 'driving');
+        const hasCustomModes = placesToRoute.some((p) => p.travelModeToNext && p.travelModeToNext !== 'driving');
+        const osrmResult = hasCustomModes
+            ? await getMultiLegRoute(placesToRoute)
+            : await getOSRMRoute(placesToRoute.map(p => ({ lat: p.lat, lng: p.lng })), 'driving');
 
         if (osrmResult) {
             setRouteStats({
                 distanceKm: osrmResult.distanceKm,
                 durationMinutes: osrmResult.durationMinutes
             });
+            if (Array.isArray(osrmResult.legs)) {
+                const map = {};
+                osrmResult.legs.forEach((leg) => {
+                    map[leg.fromId] = leg;
+                });
+                setLegStatsMap(map);
+            } else {
+                setLegStatsMap({});
+            }
             if (onRouteCalculated) {
                 onRouteCalculated(osrmResult.geometry);
             }
@@ -623,16 +722,21 @@ export default function DayPlanTimeline({ onSelectDayPlaces, onRouteCalculated, 
 
     return (
         <div className="space-y-4">
-            {/* 1. 每日標籤橫向滑動列 (Day 1, Day 2...) */}
+            {/* 1. 每日標籤橫向滑動列 (支援拖曳景點卡片直接放上 Day 標籤換日) */}
             <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-none">
                 {tripDays.map((day, idx) => (
                     <button
                         key={day.date}
-                        onClick={() => { setSelectedDayIndex(idx); setRouteStats(null); }}
+                        onClick={() => { setSelectedDayIndex(idx); setRouteStats(null); setLegStatsMap({}); }}
+                        onDragOver={(e) => { e.preventDefault(); setDragOverDayIdx(idx); }}
+                        onDragLeave={() => setDragOverDayIdx(null)}
+                        onDrop={(e) => { e.preventDefault(); handleDropOnDayTab(idx); }}
                         className={`px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition flex items-center gap-1.5 ${
-                            selectedDayIndex === idx
-                                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20'
-                                : 'bg-white text-slate-600 hover:bg-slate-100 border border-gray-200'
+                            dragOverDayIdx === idx
+                                ? 'bg-emerald-600 text-white ring-2 ring-emerald-300 scale-105'
+                                : selectedDayIndex === idx
+                                    ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20'
+                                    : 'bg-white text-slate-600 hover:bg-slate-100 border border-gray-200'
                         }`}
                     >
                         <span>Day {day.dayIndex}</span>
@@ -1002,15 +1106,25 @@ export default function DayPlanTimeline({ onSelectDayPlaces, onRouteCalculated, 
                     activeDayPlaces.map((place, idx) => {
                         const rtStop = roadTripSchedule?.stops?.[idx];
                         const navLinks = getPlaceNavigationLinks(place);
+                        const legMode = place.travelModeToNext || 'driving';
+                        const legStat = legStatsMap[place.id];
+                        const modeBadge = legMode === 'walking' ? '🚶 步行' : legMode === 'cycling' ? '🚲 單車' : '🚗 開車';
                         return (
+                        <React.Fragment key={place.id}>
                         <div
-                            key={place.id}
-                            className={`bg-white rounded-xl p-3.5 border transition-all shadow-sm flex items-start justify-between gap-3 ${
-                                rtStop?.exceedsWindow
-                                    ? 'border-rose-300 bg-rose-50/30'
-                                    : place.isLocked
-                                        ? 'border-amber-200 bg-amber-50/20'
-                                        : 'border-gray-200'
+                            draggable
+                            onDragStart={() => setDraggedPlaceId(place.id)}
+                            onDragEnd={() => { setDraggedPlaceId(null); setDragOverDayIdx(null); }}
+                            onDragOver={(e) => e.preventDefault()}
+                            onDrop={(e) => { e.preventDefault(); handleDropOnPlace(idx); }}
+                            className={`bg-white rounded-xl p-3.5 border transition-all shadow-sm flex items-start justify-between gap-3 cursor-grab active:cursor-grabbing ${
+                                draggedPlaceId === place.id
+                                    ? 'opacity-50 ring-2 ring-indigo-400'
+                                    : rtStop?.exceedsWindow
+                                        ? 'border-rose-300 bg-rose-50/30'
+                                        : place.isLocked
+                                            ? 'border-amber-200 bg-amber-50/20'
+                                            : 'border-gray-200'
                             }`}
                         >
                             <div className="flex items-start gap-3 flex-1 min-w-0">
@@ -1151,6 +1265,24 @@ export default function DayPlanTimeline({ onSelectDayPlaces, onRouteCalculated, 
                                 </button>
                             </div>
                         </div>
+                        {idx < activeDayPlaces.length - 1 && (
+                            <div className="flex items-center justify-center py-0.5">
+                                <button
+                                    type="button"
+                                    onClick={() => handleCycleLegMode(place)}
+                                    className="px-2.5 py-0.5 rounded-full bg-slate-100 hover:bg-indigo-50 border border-slate-200 hover:border-indigo-200 text-[10px] font-bold text-slate-600 hover:text-indigo-700 transition flex items-center gap-1.5"
+                                    title="點擊切換此段交通模式（開車 / 步行 / 單車）"
+                                >
+                                    <span>{modeBadge}</span>
+                                    {legStat && (
+                                        <span className="font-mono text-indigo-600">
+                                            · {legStat.distanceKm} km / {legStat.durationMinutes} 分{legStat.estimated ? ' (估)' : ''}
+                                        </span>
+                                    )}
+                                </button>
+                            </div>
+                        )}
+                        </React.Fragment>
                         );
                     })
                 )}
@@ -1279,6 +1411,40 @@ export default function DayPlanTimeline({ onSelectDayPlaces, onRouteCalculated, 
                                     value={editPlaceAddress}
                                     onChange={(e) => setEditPlaceAddress(e.target.value)}
                                     className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-indigo-500"
+                                />
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-700 mb-1">景點評分 (1–5★)</label>
+                                    <div className="flex items-center gap-1 pt-1">
+                                        {[1, 2, 3, 4, 5].map((star) => (
+                                            <button
+                                                key={star}
+                                                type="button"
+                                                onClick={() => setEditPlaceRating(editPlaceRating === star ? 0 : star)}
+                                                className={`text-lg leading-none transition ${star <= editPlaceRating ? 'text-amber-400 scale-110' : 'text-slate-300 hover:text-amber-300'}`}
+                                            >
+                                                ★
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-700 mb-1">自訂照片 (壓縮上傳)</label>
+                                    <label className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-indigo-50 border border-slate-200 text-[11px] font-bold text-slate-700 cursor-pointer">
+                                        <span>📷 選擇照片</span>
+                                        <input type="file" accept="image/*" className="hidden" onChange={handleUploadCustomPhoto} />
+                                    </label>
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-xs font-bold text-slate-700 mb-1">自訂照片網址 (僅限 https://)</label>
+                                <input
+                                    type="text"
+                                    placeholder="https://..."
+                                    value={editPlacePhotoUrl}
+                                    onChange={(e) => setEditPlacePhotoUrl(e.target.value)}
+                                    className="w-full border border-gray-300 rounded-xl px-3 py-1.5 text-xs focus:outline-none focus:border-indigo-500"
                                 />
                             </div>
                             <div className="flex justify-end gap-2 pt-3 border-t border-gray-100">
