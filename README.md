@@ -4,60 +4,61 @@
 [![Node.js Version](https://img.shields.io/badge/Node.js-18%2B-brightgreen)](https://nodejs.org/)
 [![React 18](https://img.shields.io/badge/React-18.2-blue)](https://react.dev/)
 [![Vite](https://img.shields.io/badge/Vite-7.3-purple)](https://vitejs.dev/)
-[![Tests](https://img.shields.io/badge/Tests-24%20Files%20%2F%2066%20Passing-emerald)](https://vitest.dev/)
+[![Tests](https://img.shields.io/badge/Tests-28%20Test%20Suites-emerald)](https://vitest.dev/)
 [![PWA Ready](https://img.shields.io/badge/PWA-Ready-orange)](https://web.dev/progressive-web-apps/)
-[![IndexedDB](https://img.shields.io/badge/Storage-IndexedDB%2011%20Stores-indigo)](https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API)
+[![IndexedDB](https://img.shields.io/badge/Storage-IndexedDB%20v4%20(19%20Stores)-indigo)](https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API)
+[![Worker API](https://img.shields.io/badge/Worker%20API-v2.1%20OpenAPI%203.1-cyan)](./cloudflare-worker/API_GUIDE.md)
 
-> **Light Trip Plan** 是一套專為進階旅人、商務出差、背包客與外站機票玩家打造的 **100% Client-Side 離線優先 (Offline-First)** 智慧旅遊規劃、路線演算法最佳化與多幣別清帳平台。
-> 全系統無後端資料庫依賴，隱私 100% 本地留存，並具備純前端憑證解析、向量地圖路線求解、大檔斷點續傳與專業旅遊手冊輸出能力。
+> **Light Trip Plan** 是一套專為進階旅人、戶外健行/公路旅行玩家、商務出差與外站機票愛好者打造的 **100% Client-Side 離線優先 (Offline-First)** 智慧旅遊規劃、向量地圖路線求解與多幣別清帳平台。
+> 全系統無中心資料庫依賴，隱私 100% 本地留存，支援 **繁體中文 / English / 日本語** 三語介面，並提供選配之 **Cloudflare Worker API v2.1** 供外部 cURL / AI Agent / 自動化腳本雙向同步。
 
 🔗 **[線上體驗 Demo](https://imhahac.github.io/light-trip-plan/)**
 
 ---
 
-## 🌟 四大商業核心工作台 (Core Workspaces)
+## 🌟 四大核心工作台與協作生態 (Core Workspaces)
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│                        Light Trip Plan Pro                             │
-├───────────────────┬───────────────────┬────────────────┬───────────────┤
-│  🗺️ 行程工作台    │   💰 財務中心     │   🎒 整備中心  │  🎟️ 票券憑證  │
-│  - 雙欄智慧排程   │   - 多幣別記帳    │   - 智慧行李箱 │  - 機票航班   │
-│  - MapLibre 向量  │   - 匯率凍結      │   - 優先級待辦 │  - 飯店住宿   │
-│  - 2-opt TSP 演算 │   - 最大餘數分錢  │   - 500MB 直傳 │  - 活動票券   │
-│  - 16 天氣象回溯  │   - Settle-up 清帳│   - 雲端垃圾桶 │  - PKPass/PDF │
-│  - A4 手冊 / ICS  │   - CSV 報表匯出  │   - 重量滾動   │  - 查重防護   │
-└───────────────────┴───────────────────┴────────────────┴───────────────┘
+┌────────────────────────────────────────────────────────────────────────────┐
+│                         Light Trip Plan (Light TREK)                       │
+├───────────────────┬───────────────────┬────────────────┬───────────────────┤
+│  🗺️ 行程與地圖     │   💰 財務與清帳    │   🎒 整備與協作 │  🎟️ 票券與憑證    │
+│  - 雙欄拖曳/跨日  │   - 多幣別匯率凍結 │   - 分袋重量滾動 │  - 16 種通用預訂  │
+│  - 3D 向量地圖    │   - 多人墊付分帳   │   - 待辦到期提醒 │  - 多段航班/轉機  │
+│  - 逐段 OSRM/公車 │   - 個人花費統計   │   - 500MB 續傳   │  - PKPass / PDF   │
+│  - 2-opt TSP 演算 │   - 結算日誌       │   - 旅伴協作看板 │  - 匯入審閱步驟   │
+│  - GPX 坡度/收藏  │   - BYOK AI 收據   │   - 離線衝突解決 │  - 外站票閉環拆解 │
+└───────────────────┴───────────────────┴────────────────┴───────────────────┘
 ```
 
-### 1. 🗺️ 智能行程規劃 (Planning Workspace)
-* **MapLibre GL JS + OpenFreeMap 向量圖資**：免昂貴商業 Token、無額度耗盡風險，支援流暢向量渲染與地標聚類。
-* **2-opt TSP 智慧路徑最佳化**：旅行推銷員問題求解演算法，支援自動鎖定首日啟程住宿與終日返回住宿，一鍵將當日景點重排為最短交通時間路線。
-* **OSRM 實際道路路徑導航**：計算實際行車與步行轉折軌跡，並支援 Google Maps 與 Naver Maps 一鍵外部導航跳轉。
-* **Open-Meteo 16 天氣候預測與歷史回溯**：自動依日程與座標獲取 16 天精準氣象，超長遠期行程自動回溯歷史同期天候作為行前穿著參考。
-* **維基百科景點富化**：結合 OpenStreetMap Nominatim 搜尋，自動萃取維基百科歷史文化摘要與景點圖文。
-* **外部檔案與連結解析**：純前端解析 GPX 1.1、KML、KMZ（動態解壓縮）與多行 Google Maps / Naver Maps 分享連結（支援純短網址 `maps.app.goo.gl` 自動展開與座標抽取）。
-* **級聯原子日期平移與 9-Store 完整物理級聯刪除**：旅程改期或刪除時，單一跨 Store 交易原子提交，連鎖清理日程、筆記、景點、航班住宿、記帳、行李與待辦事項，徹底杜絕殭屍孤兒資料。
-* **出版級 A4 旅遊手冊**：向量列印優化排版、支援另存高品質 PDF 與 Markdown 一鍵複製至 Notion/Obsidian。
+### 1. 🗺️ 智能行程規劃與戶外向量地圖 (Planning & Map Workspace)
+* **MapLibre GL JS + OpenFreeMap 3D 向量圖資**：免商業 Token、支援 **3D DEM 地形起伏**、地標聚類、實拍照片標記（Photo Markers），以及點擊地圖 POI 一鍵加入指定日程。
+* **原生拖曳排序與 Undo / Redo**：支援同日拖曳重排與**跨日拖曳移動**，並結合 IndexedDB 持久化復原/重做堆疊。
+* **Per-Leg OSRM 逐段實際路徑 & 2-opt TSP 最佳化**：逐段計算步行 / 單車 / 開車實際道路距離與時間（逾時自動降級 Haversine），並可一鍵以 2-opt TSP 演算法最佳化當日動線。
+* **Transitous 多段大眾運輸轉乘 & 7 大導航跳轉**：自動查詢每段連續點對點之大眾運輸轉乘路線，並支援 Google Maps、Apple Maps、Naver Maps、KakaoMap、高德、OsmAnd、Maps.me 一鍵外部導航。
+* **GPX 專業戶外工具與 Saved Tours 收藏庫**：純前端解析 GPX 1.1 / KML / KMZ 與 Google / Naver Maps 短網址；支援 **GPX 坡度著色**、海拔剖面圖、多軌跡比對、**沿途 500m 走廊 POI 搜尋**，以及持久化 GPX 軌跡收藏庫 (`savedTours`)。
+* **景點評分、照片與行程複用**：支援 1–5★ 評分、壓縮實拍照片留存、Road Trip 公路模式、一鍵複製行程 (`duplicateTrip`)，以及單一或跨全部行程匯出 RFC 5545 `.ics` 行事曆。
+* **Open-Meteo 16 天氣象與歷史回溯** + **維基百科圖文富化** + **可自訂章節之出版級 A4 PDF 手冊 / Markdown 匯出**。
 
 ### 2. 💰 多幣別財務與智慧清帳 (Finance Workspace)
-* **Frankfurter API 匯率與凍結機制**：即時獲取歐洲央行國際匯率，記帳當下即時鎖定換算匯率（Frozen Rate），確保回國平帳不因匯率波動失真。
-* **最大餘數分錢法 (Largest Remainder Method)**：多人外幣平攤精準計算至最小貨幣單位，徹底消滅無窮小數斷頭分與借貸借方漂移。
-* **Settle-up 債務最小化撮合清帳方案**：雙指針貪婪最小化轉帳次數演算法，自動吸收 1 分錢浮點數微差至主要出資人，徹底杜絕死結與未清餘額。
-* **UTF-8 BOM CSV 匯出**：相容繁體中文 Excel 一鍵匯出全旅程開銷明細。
+* **Frankfurter API 匯率凍結**：記帳當下即時鎖定國際匯率（Frozen Rate），支援預訂費用自動連動。
+* **多付款人分帳 & 最大餘數法 (Largest Remainder Method)**：支援多人同時墊付、自訂分攤對象，精準計算至最小貨幣單位不留尾差。
+* **個人花費統計 & Settle-up 結算日誌**：即時檢視各成員「已墊付 / 應負擔 / 淨差額」，並提供最小轉帳次數撮合演算法與歷史結算紀錄 (`settlementLogs`)。
+* **BYOK AI 收據掃描**：支援使用者自備金鑰（Gemini / OpenAI，金鑰僅存本機）拍照辨識收據金額、幣別與品項。
+* **UTF-8 BOM CSV 匯出**：相容繁體中文 Excel 一鍵匯出開銷明細。
 
-### 3. 🎒 整備中心與大檔管理 (Preparation Workspace)
-* **智慧行李清單**：內建氣候情境範本（海島度假、滑雪賞雪、長途歐美），具備「全員可見 / 僅限伴侶 / 私人隱私」三層能見度過濾與即時重量動態滾動。
-* **行前待辦任務 (Todos)**：支援負責人指派、優先級分類（緊急 / 高 / 中 / 低）、到期日倒數警示與逾期高亮。
-* **500MB 大檔直傳 Google Drive**：支援 50MB 憑證檔案與 500MB 高畫質旅遊影片直傳，採用 Google Drive Resumable API，具備 `Content-Range` 狀態探測與指數退避斷點續傳。
-* **軟刪除垃圾桶 (Trash Bin)**：誤刪項目保留於垃圾桶，支援一鍵即時還原。
+### 3. 🎒 整備中心、離線同步與非同步協作 (Preparation & Collab)
+* **智慧分袋行李清單**：內建氣候範本、三層能見度過濾與**分袋重量滾動統計**。
+* **行前待辦任務 (Todos)**：支援負責人指派、優先級分類與**每次工作階段到期自動提醒**。
+* **非同步旅伴協作看板 (`CollabPanel`)**：支援留言討論、投票提案與狀態追蹤，並可透過 Worker API 同步。
+* **離線優先同步與衝突解決**：內建離線寫入佇列 (`syncOutbox`)、**手動離線模式**、CORS 安全圖磚快取，以及同步衝突時之 **`Keep-Mine / Keep-Theirs`** 視覺化決策視窗。
+* **細粒度唯讀分享 (`shareScopes`)**：分享連結時可自訂暴露範圍（行程、住宿、票券、費用等），唯讀檢視者畫面會自動隱藏未授權分頁。
+* **500MB 大檔直傳 Google Drive + 軟刪除垃圾桶 (`fileTrash`)**：採用 Google Drive Resumable API 斷點續傳與一鍵還原。
 
-### 4. 🎟️ 雙軌票券憑證與管理 (Tickets Workspace)
-* **16 種通用預訂類型**：涵蓋機票、飯店、火車高鐵、渡輪、租車、活動、餐飲、保險、旅行團等，標配專屬視覺識別。
-* **純前端 Apple Wallet PKPass 解析器**：客戶端解壓縮讀取 `pass.json`，萃取航班時間、登機門、座位與 PNR。
-* **純前端 PDF 憑證文字抽取解析**：離線抽取機票與住宿憑證關鍵資訊。
-* **外站票自動拆解與全球起錨閉環**：動態依起錨機場為核心，支援台灣及全球任意機場出發/返程之多段 Open-Jaw、Stopover 閉環識別。
-* **自然鍵 (confirmationCode) 查重防護**：防止使用者重複拖曳同一張憑證產生重複資料。
+### 4. 🎟️ 雙軌票券憑證與個人化體驗 (Tickets & Personalization)
+* **16 種通用預訂 + 匯入前審閱步驟 (Review Step)**：純前端解析 Apple Wallet `.pkpass` 與 PDF 憑證，匯入前提供欄位預覽、自然鍵 (`confirmationCode`) 查重與費用連動勾選。
+* **多段航班時區與轉機時間**：內建 7,917+ 全球機場離線座標與 IANA 時區庫（懶載入），自動計算實際飛行時長與跨航段轉機（Layover）時間，並支援外站票閉環拆解。
+* **三語系與深度個人化**：完整支援 **繁體中文 / English / 日本語**；提供深淺色主題 (`Light / Dark / System`)、7 種強調色、字體大小/排版密度/減少動態效果、可自訂儀表板元件，以及 `?` 快捷鍵說明視窗。
 
 ---
 
@@ -65,33 +66,28 @@
 
 ```mermaid
 graph TD
-    UI[商業分組前端 UI - Light Trip Plan] --> Context[React Context 狀態層 / UIContext]
-    Context --> DB[(IndexedDB 11 個 Stores - 本地優先)]
-    Context --> OfflineAirport[(7,917+ 全球機場離線庫 - IANA 時區)]
-    
-    UI --> MapEngine[MapLibre GL JS + OSRM + 2-opt TSP]
-    UI --> Ingestion[PKPass / PDF / GPX / KML 純前端解碼]
-    
-    Context -. 選擇性安全代理 .-> CFWorker[Cloudflare Worker 安全代理]
-    CFWorker -. 512KB限制/HTTPS/SSRF防禦/KV快照 .-> ExtAPI[Aviation / AirLabs / Unshorten / Maps]
-    
-    Context -. 授權直連 .-> GDrive[(Google Drive 個人雲端備份 / 500MB 斷點續傳)]
-    Context -. 匯出 .-> ExportEngine[A4 PDF 手冊 / RFC 5545 .ics / GPX 1.1]
+    UI[Light Trip Plan SPA / PWA - 3-Lang & Theme] --> Context[React Context / Undo-Redo / Outbox]
+    Context --> DB[(IndexedDB v4 - 19 Stores 本地優先)]
+    Context --> OfflineAirport[(7,917+ 全球機場離線庫 - Lazy IANA)]
+
+    UI --> MapEngine[MapLibre 3D + OSRM + Transitous + 2-opt TSP]
+    UI --> Ingestion[PKPass / PDF / GPX / KML / BYOK AI Receipt]
+
+    Context -. 選擇性邊緣代理 & 雙向同步 .-> CFWorker[Cloudflare Worker API v2.1]
+    CFWorker -. KV Append-Only Inbox / Sub-Keys / Export .-> ExtClients[cURL / AI Agents / LINE Bot]
+    CFWorker -. 512KB限制 / CORS白名單 / SSRF防禦 .-> ExtAPI[Aviation / AirLabs / Unshorten]
+
+    Context -. OAuth 2.0 直連 .-> GDrive[(Google Drive 加密備份 / 500MB 續傳)]
+    Context -. 匯出 .-> ExportEngine[A4 PDF 手冊 / .ics / GPX 1.1 / CSV]
 ```
 
-### 資料儲存核心 (IndexedDB 11 Stores)
-全系統採用 `idb` 封裝，取代瀏覽器傳統 `localStorage` 5MB 容量上限，具備極高容量與原子交易安全性：
-* `trips`：旅程主設定與出發/結束日期
-* `dayPlans`：每日行程與時間軸
-* `placeItems`：景點點位、地理坐標與備忘錄
-* `reservations`：16 種預訂模型與電子憑證
-* `expenses`：多幣別開銷與凍結匯率
-* `settleRecords`：平帳與清帳軌跡
-* `packingItems`：行李打包清單與重量配置
-* `todos`：行前待辦與優先級追蹤
-* `files`：檔案附件元資料與 Google Drive 檔案對應
-* `auditLogs`：系統操作日誌
-* `settings`：使用者個人化設定與幣別預設值
+### 資料儲存核心 (`treklite_db` — IndexedDB v4 / 19 Stores)
+全系統採用 `idb` 封裝與跨 Store 原子交易，徹底突破 `localStorage` 5MB 上限：
+* **核心行程與日程**：`trips`、`dayPlans`、`placeItems`、`dayNotes`、`savedTours`（GPX 軌跡收藏庫）
+* **票券與憑證**：`reservations`、`tickets`、`hotels`、`activities`
+* **財務與清帳**：`expenses`、`settlementLogs`
+* **整備與檔案**：`packingItems`、`todos`、`attachedFiles`、`fileTrash`
+* **同步、協作與設定**：`syncOutbox`、`collabItems`、`backups`、`appSettings`
 
 ---
 
@@ -110,40 +106,39 @@ npm run build
 ```
 
 ### 2. 品質門禁與自動化測試 (CI Gate)
-本專案堅持「**不修復不上線**」，所有提交與部署均受 GitHub Actions CI 嚴格卡關：
+本專案透過 `.github/workflows/deploy.yml` 執行嚴格發布門禁（通過後才會部署 GitHub Pages 與 Cloudflare Worker）：
 ```bash
-# 靜態代碼檢查 (需為 0 錯誤、0 警告)
+# 靜態代碼檢查 (強制 0 錯誤、0 警告)
 npm run lint
 
-# 單元與整合測試 (24 個測試套件、66 項測試需 100% 通過)
+# 單元與整合測試 (28 個測試套件)
 npm test
+
+# Worker 腳本語法檢查
+node --check cloudflare-worker/worker.js
 ```
 
 ---
 
-## 🔐 隱私、資安與零成本可觀測性
+## 🔐 隱私、資安與 Cloudflare Worker API v2.1
 
-1. **零追蹤、零中心儲存**：旅客之所有航班代碼、護照號碼、住宿地址與花費明細 100% 存在旅客個人裝置 IndexedDB 中。
-2. **安全代理加固 (Cloudflare Worker)**：
-   * 限制最大 Request Body 512KB，杜絕記憶體耗盡攻擊。
-   * 嚴格 UUID 格式正則校驗，防 SQL/NoSQL 惡意字串。
-   * 短網址邊緣還原代理（`?api=unshorten`）具備嚴格協議白名單與內網/私有 IP（SSRF）阻斷防護。
-   * 強制 HTTPS 與 `encodeURIComponent` 參數消毒，消除 Open Redirect 與未授權存取。
-   * 支援 `SHARE_SECRET_TOKEN` Bearer 鑑權。
-3. **零成本除錯診斷包與徹底自癒重設 (Diagnostic Dump & Recovery)**：
-   * 當遭遇異常或瀏覽器儲存問題時，Error Boundary 崩潰頁提供「📥 下載除錯診斷包」，一鍵匯出包含錯誤堆疊、瀏覽器環境、IndexedDB 11 個 Stores 記錄計數之 JSON 報告。
-   * 點擊「⚠️ 強制清除資料並重設」可徹底抹除 IndexedDB (`treklite_db`)、`localStorage` 與 `sessionStorage`，根除毀損數據死循環白屏。
+1. **零追蹤、零中心儲存**：旅客之航班、護照、住宿與花費 100% 留存於個人裝置 IndexedDB，BYOK AI 金鑰僅存本機不經中繼。
+2. **Cloudflare Worker API v2.1 安全閘道**：
+   * **Append-Only Inbox + 多頻道同步**：支援 `POST` / `PUT` / `PATCH`（局部合併）/ `DELETE`（單筆或全頻道）、`?dryRun=true` 試跑、`X-Idempotency-Key` 冪等防重與樂觀鎖 (`If-Match` / `baseRevision`)。
+   * **多格式直接匯出與規格自省**：內建 `/api/v1/export?format=csv|ics|gpx`、`/api/v1/health`、`/api/v1/whoami` 與 `/api/v1/openapi.json`（OpenAPI 3.1）。
+   * **分權子金鑰與零停機輪替**：支援逗號分隔多把 Master Key 與 `/api/v1/keys` 建立限定頻道、權限 (`read/write/delete`) 與有效期的 Sub-Key。
+   * **邊緣安全加固**：512KB Payload 上限、`ALLOWED_ORIGINS` CORS 白名單、防暴力破解速率限制 (`429`)、短網址還原 SSRF 內網阻斷，以及選配 `SHARE_SECRET_TOKEN` / `REQUIRE_PROXY_AUTH`。
+3. **崩潰自癒與診斷包**：Error Boundary 提供一鍵下載除錯診斷包（含 IndexedDB 健康狀態與錯誤堆疊）與強制清除重設機制。
 
 ---
 
 ## 📖 部署與 API 使用文件
-詳細之 Cloudflare Worker、GitHub Pages、Google OAuth 憑證、PWA 配置與外部寫入 API 說明，請參閱：
+詳細之 Cloudflare Worker、GitHub Pages、Google OAuth 憑證、LINE Bot 排程與外部 API v2.1 規格，請參閱：
 * 👉 **[完整生產環境部署指南 (deployment.md)](./deployment.md)**
-* 👉 **[外部寫入與雲端自動同步 API 使用指南 (cloudflare-worker/API_GUIDE.md)](./cloudflare-worker/API_GUIDE.md)**
-* 👉 **[Cloudflare Worker KV 部署手冊 (cloudflare-worker/CLOUDFLARE_KV_DEPLOY.md)](./cloudflare-worker/CLOUDFLARE_KV_DEPLOY.md)**
+* 👉 **[外部寫入與雲端自動同步 API v2.1 使用指南 (cloudflare-worker/API_GUIDE.md)](./cloudflare-worker/API_GUIDE.md)**
+* 👉 **[Cloudflare Worker KV 部署與驗證手冊 (cloudflare-worker/CLOUDFLARE_KV_DEPLOY.md)](./cloudflare-worker/CLOUDFLARE_KV_DEPLOY.md)**
 
 ---
 
 ## 授權條款
 本專案採用 [MIT License](LICENSE) 授權。
-
